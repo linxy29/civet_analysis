@@ -18,17 +18,38 @@ source("./supervised_selection_function_twogroup.R")
 
 ```{r}
 ## zcat cellSNP.base.vcf.gz | grep -v '^#' | awk '{print $2$4">"$5}' > cellSNP.variants.tsv
-AD_mtx <- ReadMtx(
-  mtx = "/home/linxy29/data/maester/maester_paper/bpdcn712/manual_pipeline/maester_cellSNP0/cellSNP.tag.AD.mtx", features = "/home/linxy29/data/maester/maester_paper/bpdcn712/manual_pipeline/maester_cellSNP0/cellSNP.variants.tsv",
-  cells = "/home/linxy29/data/maester/maester_paper/bpdcn712/manual_pipeline/maester_cellSNP0/cellSNP.samples.tsv", feature.column = 1)
-DP_mtx <- ReadMtx(
-  mtx = "/home/linxy29/data/maester/maester_paper/bpdcn712/manual_pipeline/maester_cellSNP0/cellSNP.tag.DP.mtx", features = "/home/linxy29/data/maester/maester_paper/bpdcn712/manual_pipeline/maester_cellSNP0/cellSNP.variants.tsv",
-  cells = "/home/linxy29/data/maester/maester_paper/bpdcn712/manual_pipeline/maester_cellSNP0/cellSNP.samples.tsv", feature.column = 1)
-af_mtx = AD_mtx/DP_mtx
-af_mtx[is.na(af_mtx)] = 0
-dim(AD_mtx)
-dim(DP_mtx)
-dim(af_mtx)
+# Define paths to input files for better readability and maintenance
+#base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/mquad_pipeline/cellSNP/"
+base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/bpdcn712_assemble_trimmed_aligned_mt_addtag_cellSNP0/"
+ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
+dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
+features_path <- file.path(base_path, "cellSNP.variants.tsv")
+cells_path <- file.path(base_path, "cellSNP.samples.tsv")
+
+# Function to read matrix with error checking
+read_mtx_safe <- function(mtx, features, cells, feature.column = 1) {
+  if (!file.exists(mtx) || !file.exists(features) || !file.exists(cells)) {
+    stop("One or more input files do not exist.")
+  }
+  
+  # Assuming ReadMtx is a predefined function or part of a package not shown here
+  ReadMtx(mtx = mtx, features = features, cells = cells, feature.column = feature.column)
+}
+
+# Read allele depth (AD) and total depth (DP) matrices
+AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+
+# Calculate allele frequencies, handling division by zero and NA values
+af_mtx <- AD_mtx / DP_mtx
+af_mtx[is.na(af_mtx)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(AD_mtx), "\n")
+cat("Dimensions of DP_mtx:", dim(DP_mtx), "\n")
+cat("Dimensions of af_mtx:", dim(af_mtx), "\n")
+
+# Display a subset of the allele frequency matrix
 af_mtx[1:10, 1:10]
 ```
 
@@ -40,6 +61,8 @@ bpdcn_TCR = read_csv("/home/linxy29/data/maester/maester_paper/bpdcn712/bpdcn_cl
 
 
 ### Apply DCATS algorithm
+
+3326 cells have TCR information. 
 
 ```{r}
 ## subset cells with clone information
@@ -60,8 +83,8 @@ dim(subset_cell_wClone)
 ```
 
 ```{r}
-sample_DP = subset_DP[2800:2900, 2800:2900]
-sample_AD = subset_AD[2800:2900, 2800:2900]
+sample_DP = subset_DP[3800:3900, 2800:2900]
+sample_AD = subset_AD[3800:3900, 2800:2900]
 sample_clone_mat = subset_cell_wClone[2800:2900,] %>% 
   select(barcode, TRB_CDR3)
 colnames(sample_clone_mat) = c("cellID", "cell_label")
@@ -149,7 +172,7 @@ source("./supervised_selection_function_twogroup.R")
 
 ```{r}
 # Define paths to input files for better readability and maintenance
-base_path <- "/home/linxy29/data/maester/maester_paper/k562_bt142/maester/mquad_pipeline/maester_cellSNP001"
+base_path <- "/home/linxy29/data/maester/maester_paper/k562_bt142/maester/trimmed_starsolo_chrM_cellSNP0"
 ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
 dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
 features_path <- file.path(base_path, "cellSNP.variants.tsv")
@@ -185,7 +208,7 @@ af_mtx[1:10, 1:10]
 ## Read in TCR information
 
 ```{r}
-cell_wClone = read_csv("/home/linxy29/data/maester/maester_paper/k562_bt142/cell_label_full.csv")
+cell_wClone = read_csv("/home/linxy29/data/maester/maester_paper/k562_bt142/cell_label.csv")
 ```
 
 ### Get sample AD, DP, clone_mat
@@ -198,6 +221,7 @@ sample_clone_mat = cell_wClone %>% filter(barcode %in% colnames(sample_AD))
 colnames(sample_clone_mat) = c("cellID", "cell_label")
 save(sample_AD, sample_DP, sample_clone_mat, file = "sample_AD_DP_clone_mat.RData")
 ```
+
 
 
 ## Apply DCATS algorithm
@@ -218,9 +242,18 @@ dim(subset_cell_wClone)
 
 ```{r}
 colnames(subset_cell_wClone) = c("cellID", "cell_label")
-res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = "k562")
+res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = "K562")
 #res = supervised_glm(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, use_random_effect = FALSE)
-saveRDS(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/supervised_glm_pval.rds")
+saveRDS(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/temp_res.rds")
+write.csv(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/temp_res.csv")
+```
+
+```{r}
+## save results as csv
+a = readRDS("/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/supervised_glm_pval.rds")
+res = do.call(cbind,a)
+colnames(res) = names(a)
+write.csv(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/supervised_glm_pval.csv")
 ```
 
 
