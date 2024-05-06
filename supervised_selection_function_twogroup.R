@@ -1,4 +1,7 @@
 #load("sample_AD_DP_clone_mat.RData")
+#AD_mat = sample_AD
+#DP_mat = sample_DP
+#clone_mat = sample_clone_mat
 
 new.wald.test = function (Sigma, b, Terms = NULL, L = NULL, H0 = NULL, df = NULL, verbose = FALSE) 
 {
@@ -114,10 +117,10 @@ add_row_to_matrix <- function(matrix, row) {
 }
 
 ## perform test based on betabin GLM
-performStatisticalTests <- function(df_use, use_random_effect, df) { ## df here is degree of freedom
+performStatisticalTests <- function(df_use, use_random_effect) { ## df here is degree of freedom
   library(aod)
   if(sum(df_use$n1 != 0) < 5) {
-    return(list(vals = rep(NA, 2), df = df))
+    return(rep(NA, 2))
   }
   formula_fm0 <- as.formula("cbind(n1, ref_count) ~ 1")
   fm0 <- aod::betabin(formula_fm0, ~1, data = df_use, warnings = FALSE)
@@ -130,6 +133,7 @@ performStatisticalTests <- function(df_use, use_random_effect, df) { ## df here 
     } else {
       wald_res <- new.wald.test(b = coef(fm1), Sigma = vcov(fm1), Terms = 2)
       nonLR_pval <- wald_res$result$chi2[3]
+      df <- fm1@nbpar - fm0@nbpar
     }
   } else {
     random_effect <- as.formula("~ cell_label")
@@ -137,13 +141,14 @@ performStatisticalTests <- function(df_use, use_random_effect, df) { ## df here 
     ## ANOVA test
     anova_res <- anova(fm0, fm1)
     nonLR_pval <- anova_res@anova.table$`P(> Chi2)`[2]
+    df <- fm1@nbpar - fm0@nbpar
   }
   # likelihood ratio test
   LR_val <- fm0@dev - fm1@dev
-  df <- fm1@nbpar - fm0@nbpar
-  return(list(vals = c(nonLR_pval, LR_val), df = df))
+  return(c(nonLR_pval, LR_val))
 }
 
+## the random effect function hasn't been tested
 FindVariants <- function(
   AD_mat, DP_mat, clone_mat,
   ident.1 = NULL,
@@ -189,8 +194,7 @@ FindVariants <- function(
   }
   ## Initialize matrices for results
   V <- nrow(AD_mat)  # Number of variants
-  res_mat = matrix(nrow = 0, ncol = 0)
-  df = NA
+  res_mat <- matrix(nrow = 0, ncol = 0)
   ## Iterate through variants, calculate p.value
   for (v in seq_len(V)) {
     #message(paste("Processing the ", str(v), " variants..."))
@@ -203,18 +207,19 @@ FindVariants <- function(
     if(length(unique(df_use$cell_label)) == 1) {
       res_mat = add_row_to_matrix(res_mat, rep(NA,2))
     } else {
-      res_test = performStatisticalTests(df_use = df_use, use_random_effect = use_random_effect, df = df)
-      res_mat = add_row_to_matrix(res_mat, res_test$vals)
+      res_test = performStatisticalTests(df_use = df_use, use_random_effect = use_random_effect)
+      res_mat = add_row_to_matrix(res_mat, res_test)
     }
   }
   if (!use_random_effect) {
     colnames(res_mat) = c("Wald_pval", "LR_val")
+    df = 1
   } else {
     colnames(res_mat) = c("ANOVA_pval", "LR_val")
   }
   rownames(res_mat) = rownames(AD_mat)
-  res_mat = na.omit(res_mat)
-  LRT_pval = pchisq(res_mat[,2], df = res_test$df, lower.tail = FALSE, log.p = FALSE)
+  res_mat = res_mat[!is.na(res_mat[,2]),]
+  LRT_pval = pchisq(res_mat[,2], df = df, lower.tail = FALSE, log.p = FALSE)
   LRT_fdr = p.adjust(LRT_pval, method = "fdr")
   res_mat = cbind(res_mat, LRT_pval)
   res_mat = cbind(res_mat, LRT_fdr)
@@ -222,7 +227,11 @@ FindVariants <- function(
   return(res_mat)
 }
 
+
 #load("sample_multi_AD_DP_clone_mat.RData")
+#AD_mat = sample_AD
+#DP_mat = sample_DP
+#clone_mat = sample_clone_mat
 
 ## The FindAllVariants here is apply find FindVariants for each group using 1vsAll mode.
 FindAllVariants <- function(
