@@ -1,5 +1,5 @@
 ## This script runs SNP_VAE to get results while the input is the output of variants selected using existing labels.
-## python selectedVariants_SNPVAE.py /home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/mixed_effect/supervised_glm_LRT/ /home/linxy29/data/maester/maester_paper/k562_bt142/cell_label.csv
+## python selectedVariants_SNPVAE_CLI.py /home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/mixed_effect/supervised_glm_LRT/ /home/linxy29/data/maester/maester_paper/k562_bt142/cell_label.csv
 
 from utilities import load_mquad
 import numpy as np

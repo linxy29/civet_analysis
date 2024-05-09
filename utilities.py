@@ -116,7 +116,7 @@ def anno_heat(X, row_anno=None, col_anno=None, col_anno2=None,
     return g
 
 ## subset mquad so that it only contains variants with given indices
-def select_mquad(mquad, include_variant_names=None, exclude_variant_names=None, include_indices=None, exclude_indices=None, include_cell=None, exclude_cell=None):
+def select_mquad(mquad, barcode, include_variant_names=None, exclude_variant_names=None, include_indices=None, exclude_indices=None, include_cell=None, exclude_cell=None):
     import numpy as np
     import copy
     from mquad.mquad import Mquad
@@ -149,15 +149,17 @@ def select_mquad(mquad, include_variant_names=None, exclude_variant_names=None, 
     if include_cell is not None:
         new_mquad.ad = new_mquad.ad[:, include_cell]
         new_mquad.dp = new_mquad.dp[:, include_cell]
+        new_barcode = barcode[include_cell]
     
     if exclude_cell is not None:
         new_mquad.ad = np.delete(new_mquad.ad, exclude_cell, axis=1)
         new_mquad.dp = np.delete(new_mquad.dp, exclude_cell, axis=1)
+        new_barcode = np.delete(barcode, exclude_cell)
     
-    return new_mquad
+    return new_mquad, new_barcode
 
 
-def write_mquad(mquad, out_dir):
+def write_mquad(mquad, barcode, out_dir):
     from scipy.io import mmwrite
     import os
     from scipy import sparse
@@ -172,6 +174,8 @@ def write_mquad(mquad, out_dir):
         else:
             for var in mquad.variants:
                 f.write(var.split('_')[1] + var.split('_')[2] + '>' + var.split('_')[3] + '\n')
+    with open(out_dir + "/passed_sample_names.txt", "w") as f:
+        f.writelines(cb + '\n' for cb in barcode)
     mmwrite(out_dir + "/passed_ad.mtx", sparse.csr_matrix(ad))
     mmwrite(out_dir + "/passed_dp.mtx", sparse.csr_matrix(dp))
     return
