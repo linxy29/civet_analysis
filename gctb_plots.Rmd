@@ -1,0 +1,95 @@
+---
+title: "GCTB plot"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(Seurat)
+```
+
+```{r}
+load("/home/linxy29/data/GCTB/seuratObj/GCTB8.combined.V2.rdata")
+```
+
+```{r, eval=TRUE}
+cell.type=c("Mesenchymal","Macrophage","T cells","Endothelial",
+            "T cells","Monocyte","Giant cells","T cells",
+            "Mesenchymal","Pre-Giant",'Mesenchymal',"Mesenchymal",
+            "T cells","Mesenchymal",'NK cells','Mast cells')
+table(cell.type)
+Idents(GCTB8.combined.V2)=GCTB8.combined.V2$seurat_clusters
+names(x = cell.type) <- levels(GCTB8.combined.V2)
+GCTB8.combined.V2 <- RenameIdents(GCTB8.combined.V2,cell.type)
+GCTB8.combined.V2$cell.type <- Idents(GCTB8.combined.V2)
+DimPlot(GCTB8.combined.V2)
+```
+
+```{r}
+gctb2 = subset(GCTB8.combined.V2, subset = orig.ident == c("L86", "L98"))
+saveRDS(gctb2, "/home/linxy29/data/maester/oagct/gctb2.rds")
+gct86 = subset(GCTB8.combined.V2, subset = orig.ident == "L86")
+gct98 = subset(GCTB8.combined.V2, subset = orig.ident == "L98")
+cloneID_df_gct86 = read_csv(str_c('/home/linxy29/data/maester/oagct/', 'gct86', '/cloneID_df_4layers.csv'))
+cloneID_df_gct98 = read_csv(str_c('/home/linxy29/data/maester/oagct/', 'gct98', '/cloneID_df_4layers.csv'))
+head(cloneID_df_gct86)
+```
+
+```{r}
+## modify cloneID file
+cloneID_df_gct86 = cloneID_df_gct86 %>% 
+  mutate(cell = str_c("L86_", cell, "-1"))
+cloneID_df_gct98 = cloneID_df_gct98 %>% 
+  mutate(cell = str_c("L98_", cell, "-1"))
+head(cloneID_df_gct86)
+head(cloneID_df_gct98)
+```
+
+```{r}
+## add clone information to meta data
+gct86_common = subset(gct86, cells = intersect(Cells(gct86), cloneID_df_gct86$cell))
+gct98_common = subset(gct98, cells = intersect(Cells(gct98), cloneID_df_gct98$cell))
+meta_subset <- cloneID_df_gct86[cloneID_df_gct86$cell %in% colnames(gct86), ]
+metadata_list = meta_subset$cloneID
+names(metadata_list) = meta_subset$cell
+gct86_common <- AddMetaData(object = gct86_common, metadata = metadata_list, col.name = 'cloneID')
+
+meta_subset <- cloneID_df_gct98[cloneID_df_gct98$cell %in% colnames(gct98), ]
+metadata_list = meta_subset$cloneID
+names(metadata_list) = meta_subset$cell
+gct98_common <- AddMetaData(object = gct98_common, metadata = metadata_list, col.name = 'cloneID')
+```
+
+```{r}
+DimPlot(gctb2)
+ggsave('./plot/gctb2_umap.png')
+DimPlot(gctb2, split.by = 'orig.ident', group.by = 'orig.ident')
+ggsave('./plot/gctb2_umap_sample.png')
+p1 = DimPlot(gct86_common)
+p2 = DimPlot(gct86_common, group.by = 'cloneID')
+p1 + p2
+ggsave('./plot/gct86_celltype_clone.png')
+p1 = DimPlot(gct98_common)
+p2 = DimPlot(gct98_common, group.by = 'cloneID')
+p1 + p2
+ggsave('./plot/gct98_celltype_clone.png')
+```
+
+```{r}
+table(gct86_common$cell.type, gct86_common$cloneID)
+table(gct98_common$cell.type, gct98_common$cloneID)
+```
+
+```{r}
+sample = 'gct98'
+AD_mtx <- ReadMtx(
+  mtx = str_c("/home/linxy29/data/maester/oagct/", sample, "/maester_mquad/passed_ad.mtx"), features = str_c("/home/linxy29/data/maester/oagct/", sample, "/maester_mquad/passed_variant_names.txt"),
+  cells = str_c("/home/linxy29/data/maester/oagct/", sample, "/maester_cellSNP/cellSNP.samples.tsv"), feature.column = 1)
+DP_mtx <- ReadMtx(
+  mtx = str_c("/home/linxy29/data/maester/oagct/", sample, "/maester_mquad/passed_dp.mtx"), features = str_c("/home/linxy29/data/maester/oagct/", sample, "/maester_mquad/passed_variant_names.txt"),
+  cells = str_c("/home/linxy29/data/maester/oagct/", sample, "/maester_cellSNP/cellSNP.samples.tsv"), feature.column = 1)
+af_mtx = AD_mtx/DP_mtx
+af_mtx[is.na(af_mtx)] = 0
+gct98_snp = rownames(AD_mtx)
+intersect(gct86_snp, gct98_snp) %>% length()
+```
