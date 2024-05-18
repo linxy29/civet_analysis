@@ -13,7 +13,7 @@ args = parser.parse_args()
 
 base_path = args.input_path
 #base_path = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/mixed_effect/supervised_glm_Wald/"
-#base_path = "/Users/linxy29/Documents/Data/maester/maester_paper/k562_bt142/variant_selection/mixed_effect/supervised_glm_Wald"
+#base_path = "/Users/linxy29/Documents/Data/maester/maester_paper/k562_bt142/maester/trimmed_starsolo_chrM_cellSNP0_WaldVariant_paperCell/"
 SNP_VAE_res = base_path + "SNP_VAE_results/"
 
 ## detect SNP_VAE_res 
