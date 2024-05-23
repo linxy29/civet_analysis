@@ -1,5 +1,5 @@
 ---
-title: "supervised_selection"
+title: "CIVET in MAESTER data"
 output: html_document
 ---
 
@@ -68,7 +68,8 @@ bpdcn_TCR = read_csv("/home/linxy29/data/maester/maester_paper/bpdcn712/bpdcn_cl
 ## subset cells with clone information
 cell_wClone = bpdcn_TCR %>% 
   mutate(barcode = str_remove(barcode, "-1")) %>% 
-  filter(!is.na(TRB_CDR3))
+  filter(!is.na(TRB_CDR3)) %>% 
+  filter(!is.na(MT_clone))
 ## subset cells in AD and DP
 common_barcode = intersect(cell_wClone$barcode, colnames(AD_mtx))
 subset_AD = AD_mtx[,common_barcode]

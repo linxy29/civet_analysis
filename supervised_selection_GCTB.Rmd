@@ -1,0 +1,202 @@
+---
+title: "CIVET in GCTB data"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(Seurat)
+```
+
+### Load data
+
+```{r}
+source("./supervised_selection_function_twogroup.R")
+```
+
+Mutation data - gct86 sample
+
+```{r}
+## zcat cellSNP.base.vcf.gz | grep -v '^#' | awk '{print $2$4">"$5}' > cellSNP.variants.tsv
+# Define paths to input files for better readability and maintenance
+base_path <- "/home/linxy29/data/maester/oagct/gct86/HEMO_pipeline/maester_cellSNP"
+ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
+dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
+features_path <- file.path(base_path, "cellSNP.variants.tsv")
+cells_path <- file.path(base_path, "cellSNP.samples.tsv")
+
+# Function to read matrix with error checking
+read_mtx_safe <- function(mtx, features, cells, feature.column = 1) {
+  if (!file.exists(mtx) || !file.exists(features) || !file.exists(cells)) {
+    stop("One or more input files do not exist.")
+  }
+  
+  # Assuming ReadMtx is a predefined function or part of a package not shown here
+  ReadMtx(mtx = mtx, features = features, cells = cells, feature.column = feature.column)
+}
+
+# Read allele depth (AD) and total depth (DP) matrices
+gct86_AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+gct86_DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+
+# Calculate allele frequencies, handling division by zero and NA values
+gct86_af_mtx <- gct86_AD_mtx / gct86_DP_mtx
+gct86_af_mtx[is.na(gct86_af_mtx)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(gct86_AD_mtx), "\n")
+cat("Dimensions of DP_mtx:", dim(gct86_DP_mtx), "\n")
+cat("Dimensions of af_mtx:", dim(gct86_af_mtx), "\n")
+
+# Display a subset of the allele frequency matrix
+gct86_af_mtx[1:10, 1:10]
+```
+
+Mutation data - gct98 sample
+
+```{r}
+## zcat cellSNP.base.vcf.gz | grep -v '^#' | awk '{print $2$4">"$5}' > cellSNP.variants.tsv
+# Define paths to input files for better readability and maintenance
+base_path <- "/home/linxy29/data/maester/oagct/gct98/HEMO_pipeline/maester_cellSNP"
+ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
+dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
+features_path <- file.path(base_path, "cellSNP.variants.tsv")
+cells_path <- file.path(base_path, "cellSNP.samples.tsv")
+
+# Read allele depth (AD) and total depth (DP) matrices
+gct98_AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+gct98_DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+
+# Calculate allele frequencies, handling division by zero and NA values
+gct98_af_mtx <- gct98_AD_mtx / gct98_DP_mtx
+gct98_af_mtx[is.na(gct98_af_mtx)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(gct98_AD_mtx), "\n")
+cat("Dimensions of DP_mtx:", dim(gct98_DP_mtx), "\n")
+cat("Dimensions of af_mtx:", dim(gct98_af_mtx), "\n")
+
+# Display a subset of the allele frequency matrix
+gct98_af_mtx[1:10, 1:10]
+```
+
+CNV data
+
+```{r}
+gct98_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct98_refHCA_cnv/clone_post_2.tsv") %>% mutate(cell = str_c("L98_", cell)) %>% mutate(clone = str_c("L98_", compartment_opt))
+gct86_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct86_refHCA_cnv/clone_post_2.tsv") %>% mutate(cell = str_c("L86_", cell)) %>% mutate(clone = str_c("L86_", compartment_opt))
+```
+
+### Process data
+
+Merge AD and DP of two samples
+
+```{r}
+## check variant names are the same and whether cell barcodes are overlapped
+head(rownames(gct86_AD_mtx))
+head(rownames(gct98_AD_mtx))
+setdiff(colnames(gct86_AD_mtx), colnames(gct98_AD_mtx)) %>% length() ## less than the cell number of gct86 sample (1283) => there are overlapped cell barcodes
+```
+
+Modify barcodes
+
+```{r}
+## add sample ID to barcode
+colnames(gct86_AD_mtx) = str_c("L86_", colnames(gct86_AD_mtx))
+colnames(gct86_DP_mtx) = str_c("L86_", colnames(gct86_DP_mtx))
+colnames(gct98_AD_mtx) = str_c("L98_", colnames(gct98_AD_mtx))
+colnames(gct98_DP_mtx) = str_c("L98_", colnames(gct98_DP_mtx))
+```
+
+Change variants name. For those coming from same postition with different alternative allele, we just replace the unrecorded one with 0 right now. 
+
+```{r}
+## get all variants
+combine_variants = c(rownames(gct86_AD_mtx), rownames(gct98_AD_mtx)) %>% unique()
+a = data.frame(combine_variants = combine_variants) %>% 
+  mutate(position = as.numeric(gsub("[^0-9]", "", combine_variants))) %>% 
+  arrange(position)
+length(a$position) == length(unique(a$position))
+
+## extend gct86
+# Find the missing variants
+missing_variants <- setdiff(combine_variants, rownames(gct86_AD_mtx))
+# Create a matrix for the missing rows with NA values (or zeros)
+missing_matrix <- matrix(NA, nrow = length(missing_variants), ncol = ncol(gct86_AD_mtx))
+rownames(missing_matrix) <- missing_variants
+# Combine the original matrix with the missing rows matrix
+gct86_AD_mtx_extended <- rbind(gct86_AD_mtx, missing_matrix)
+gct86_DP_mtx_extended <- rbind(gct86_DP_mtx, missing_matrix)
+# Reorder the rows to match combine_variants
+gct86_AD_mtx_extended <- gct86_AD_mtx_extended[combine_variants, ]
+gct86_DP_mtx_extended <- gct86_DP_mtx_extended[combine_variants, ]
+dim(gct86_DP_mtx_extended)
+
+## extend gct98
+# Find the missing variants
+missing_variants <- setdiff(combine_variants, rownames(gct98_AD_mtx))
+# Create a matrix for the missing rows with NA values (or zeros)
+missing_matrix <- matrix(NA, nrow = length(missing_variants), ncol = ncol(gct98_AD_mtx))
+rownames(missing_matrix) <- missing_variants
+# Combine the original matrix with the missing rows matrix
+gct98_AD_mtx_extended <- rbind(gct98_AD_mtx, missing_matrix)
+gct98_DP_mtx_extended <- rbind(gct98_DP_mtx, missing_matrix)
+# Reorder the rows to match combine_variants
+gct98_AD_mtx_extended <- gct98_AD_mtx_extended[combine_variants, ]
+gct98_DP_mtx_extended <- gct98_DP_mtx_extended[combine_variants, ]
+dim(gct98_AD_mtx_extended)
+
+gctb2_AD = cbind(gct86_AD_mtx_extended, gct98_AD_mtx_extended)
+gctb2_DP = cbind(gct86_DP_mtx_extended, gct98_DP_mtx_extended)
+
+# Calculate allele frequencies, handling division by zero and NA values
+gctb2_af <- gctb2_AD / gctb2_DP
+gctb2_af[is.na(gctb2_af)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(gctb2_AD), "\n")
+cat("Dimensions of DP_mtx:", dim(gctb2_DP), "\n")
+cat("Dimensions of af_mtx:", dim(gctb2_af), "\n")
+```
+
+Modify CNV file
+
+```{r}
+gctb2_cnv = rbind(gct86_cnv, gct98_cnv) %>% 
+  mutate(cellID = str_remove(cell, "-1")) %>% 
+  rename(cell_label = clone) %>% 
+  select(cellID, cell_label)
+```
+
+### Apply DCATS algorithm
+
+```{r}
+## subset cells in AD and DP
+common_barcode = intersect(gctb2_cnv$cellID, colnames(gctb2_AD))
+subset_AD = gctb2_AD[,common_barcode]
+subset_DP = gctb2_DP[,common_barcode]
+subset_cell_wClone = gctb2_cnv %>% 
+  filter(cellID %in% common_barcode)
+subset_AD[1:5, 1:5]
+subset_cell_wClone %>% head()
+dim(subset_AD)
+dim(subset_DP)
+dim(subset_cell_wClone)
+```
+
+```{r}
+resL = list()
+groupV = c("L86_tumor", "L98_tumor", "L98_normal")
+for (group in groupV) {
+  print(paste0("Processing ", group, " ......"))
+  sub_res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = group)
+  sub_res = data.frame(sub_res)
+  sub_res$group = group
+  sub_res$variant = rownames(sub_res)
+  resL[[group]] = sub_res
+}
+res = do.call(rbind, resL)
+saveRDS(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.rds")
+write_csv(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.cvs")
+```
+
