@@ -80,11 +80,29 @@ cat("Dimensions of af_mtx:", dim(gct98_af_mtx), "\n")
 gct98_af_mtx[1:10, 1:10]
 ```
 
-CNV data
+CNV data - refHCA
 
 ```{r}
-gct98_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct98_refHCA_cnv/clone_post_2.tsv") %>% mutate(cell = str_c("L98_", cell)) %>% mutate(clone = str_c("L98_", compartment_opt))
-gct86_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct86_refHCA_cnv/clone_post_2.tsv") %>% mutate(cell = str_c("L86_", cell)) %>% mutate(clone = str_c("L86_", compartment_opt))
+gct98_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct98_refHCA_cnv/clone_post_2.tsv") %>% mutate(clone = str_c("L98_", compartment_opt)) %>% mutate(cell = str_c("L98_", cell))
+gct86_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct86_refHCA_cnv/clone_post_2.tsv") %>% mutate(clone = str_c("L86_", compartment_opt)) %>% mutate(cell = str_c("L86_", cell))
+```
+
+CNV data - refNormal
+
+```{r}
+gct98_mes_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct98_refNormal_cnv/clone_post_2.tsv") %>% mutate(clone = str_c("L98_C", clone_opt))
+gct98_full = read_tsv("/home/linxy29/data/GCTB/cellranger_output/L98/outs/filtered_feature_bc_matrix/barcodes_copy.tsv", col_names = FALSE) 
+colnames(gct98_full) = "cell"
+gct98_cnv = gct98_full %>% mutate(cell = str_c("L98_", cell)) %>% 
+  left_join(gct98_mes_cnv) %>% 
+  mutate(clone = ifelse(is.na(clone), "L98_normal", clone))
+
+gct86_mes_cnv = read_tsv("/home/linxy29/data/maester/oagct/gct_numbat/gct86_refNormal_cnv/clone_post_2.tsv") %>% mutate(clone = str_c("L86_C", clone_opt))
+gct86_full = read_tsv("/home/linxy29/data/GCTB/cellranger_output/L86_v3/outs/filtered_feature_bc_matrix/barcodes_copy.tsv", col_names = FALSE) 
+colnames(gct86_full) = "cell"
+gct86_cnv = gct86_full %>% mutate(cell = str_c("L86_", cell)) %>% 
+  left_join(gct86_mes_cnv) %>% 
+  mutate(clone = ifelse(is.na(clone), "L86_normal", clone))
 ```
 
 ### Process data
@@ -186,10 +204,11 @@ dim(subset_cell_wClone)
 
 ```{r}
 resL = list()
+#groupV = c("L86_C1", "L86_C2", "L86_C3", "L98_C3", "L98_C1", "L98_normal", "L98_C2")
 groupV = c("L86_tumor", "L98_tumor", "L98_normal")
 for (group in groupV) {
   print(paste0("Processing ", group, " ......"))
-  sub_res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = group)
+  sub_res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = group, ident.2 = "L86_normal")
   sub_res = data.frame(sub_res)
   sub_res$group = group
   sub_res$variant = rownames(sub_res)
@@ -198,5 +217,9 @@ for (group in groupV) {
 res = do.call(rbind, resL)
 saveRDS(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.rds")
 write_csv(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.cvs")
+```
+
+```{r}
+head(res)
 ```
 
