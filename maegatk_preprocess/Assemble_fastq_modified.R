@@ -1,6 +1,6 @@
 # Xinyi Lin, 202206
 # Goal: append cell barcode and unique molecular identifier, _CB_UMI, from Read 1 to each Read 2 identifier (modified)
-# Useage: Rscript /home/linxy29/code/civet/Assemble_fastq_modified.R . "bpdcn712_assemble" "777" /home/linxy29/data/maester/maester_paper/bpdcn712/RNA/cellranger/outs/filtered_feature_bc_matrix/barcodes_copy.tsv 16 12
+# Useage: Rscript /home/linxy29/code/civet/maegatk_preprocess/Assemble_fastq_modified.R . "maester_fastq_assemble" "mb1_S1_L001" ../scRNA_cellranger/outs/filtered_feature_bc_matrix/barcodes_copy.tsv 16 12
 
 options(max.print = 500)
 options(stringsAsFactors = FALSE)
@@ -25,15 +25,16 @@ UMIlength <- as.numeric( commandArgs(trailingOnly=TRUE)[6] ) # Length of the UMI
 
 
 ### My own
-#Folder <- "/home/linxy29/data/maester/maester_paper/k562_bt142/maester/maegatk_pipeline"
+#Folder <- "/home/linxy29/data/maester/mb/mb1/maester_fastq"
 #SampleName <- "k562bt142_test"
-#R1Pattern <- "774_test"
+#R1Pattern <- "S1_L001"
 #CellBarcodes <- "/home/linxy29/data/maester/maester_paper/k562_bt142/RNA/cellranger/outs/filtered_feature_bc_matrix/barcodes_copy.tsv"
 #CBlength <- 16
 #UMIlength <- 12
 
 ### Find R1 fastq files (R2 is found by substitution later)
-R1.ch <- list.files(Folder, pattern = paste0(".*", R1Pattern, "_1.fastq*"), full.names = T)
+#R1.ch <- list.files(Folder, pattern = paste0(".*", R1Pattern, "_1.fastq*"), full.names = T)
+R1.ch <- list.files(Folder, pattern = paste0(".*", R1Pattern, "_R1_*"), full.names = T)
 message(Sys.time(), "\nLoading ", length(R1.ch)*2, " fastq files:")
 message(cat(c(R1.ch, sub("_1", "_2", R1.ch)), sep = "\n"))
 if(length(R1.ch) == 0) stop("Did not find fastq files.")
@@ -55,7 +56,7 @@ report.ls <- list()  # empty list to store number of reads
 for(f1 in R1.ch) {
   #f1 <- R1.ch[1]
   # Identify R2 fastq
-  f2 <- sub("_1", "_2", f1)
+  f2 <- sub("_R1", "_R2", f1)
   
   # Load file in 1E7 read increments
   message("file ", match(f1, R1.ch), "/", length(R1.ch), ": ", basename(f1), " ", appendLF = FALSE)

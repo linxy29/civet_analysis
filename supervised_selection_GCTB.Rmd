@@ -105,6 +105,13 @@ gct86_cnv = gct86_full %>% mutate(cell = str_c("L86_", cell)) %>%
   mutate(clone = ifelse(is.na(clone), "L86_normal", clone))
 ```
 
+Cell type data
+
+```{r}
+gctb2_anno = read.csv("/home/linxy29/data/GCTB/gctb2_anno.csv")
+```
+
+
 ### Process data
 
 Merge AD and DP of two samples
@@ -126,7 +133,7 @@ colnames(gct98_AD_mtx) = str_c("L98_", colnames(gct98_AD_mtx))
 colnames(gct98_DP_mtx) = str_c("L98_", colnames(gct98_DP_mtx))
 ```
 
-Change variants name. For those coming from same postition with different alternative allele, we just replace the unrecorded one with 0 right now. 
+Version1: Change variants name. For those coming from same position with different alternative allele, we just replace the unrecorded one with 0 right now. 
 
 ```{r}
 ## get all variants
@@ -177,23 +184,98 @@ cat("Dimensions of DP_mtx:", dim(gctb2_DP), "\n")
 cat("Dimensions of af_mtx:", dim(gctb2_af), "\n")
 ```
 
+Version2: Select overlapped variants, keep this variants only.
+
+```{r}
+## get all variants
+combine_variants = intersect(rownames(gct86_AD_mtx), rownames(gct98_AD_mtx))
+length(combine_variants)
+
+## subset gct86
+gct86_AD_mtx_subset <- gct86_AD_mtx[combine_variants, ]
+gct86_DP_mtx_subset <- gct86_DP_mtx[combine_variants, ]
+dim(gct86_DP_mtx_subset)
+
+## subset gct98
+gct98_AD_mtx_subset <- gct98_AD_mtx[combine_variants, ]
+gct98_DP_mtx_subset <- gct98_DP_mtx[combine_variants, ]
+dim(gct98_DP_mtx_subset)
+
+gctb2_AD = cbind(gct86_AD_mtx_subset, gct98_AD_mtx_subset)
+gctb2_DP = cbind(gct86_DP_mtx_subset, gct98_DP_mtx_subset)
+
+# Calculate allele frequencies, handling division by zero and NA values
+gctb2_af <- gctb2_AD / gctb2_DP
+gctb2_af[is.na(gctb2_af)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(gctb2_AD), "\n")
+cat("Dimensions of DP_mtx:", dim(gctb2_DP), "\n")
+cat("Dimensions of af_mtx:", dim(gctb2_af), "\n")
+```
+
+```{r}
+save2cellsnp <- function(gctb2_AD, gctb2_DP, output_dir) {
+  # Ensure the output directory ends with a slash
+  if (substr(output_dir, nchar(output_dir), nchar(output_dir)) != "/") {
+    output_dir <- paste0(output_dir, "/")
+  }
+  
+  # Check if the directory exists, if not create it
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # Save the sparse matrix to .mtx files
+  writeMM(gctb2_AD, file = paste0(output_dir, "cellSNP.tag.AD.mtx"))
+  writeMM(gctb2_DP, file = paste0(output_dir, "cellSNP.tag.DP.mtx"))
+  
+  # Save the column names to a .tsv file
+  write.table(colnames(gctb2_AD), file = paste0(output_dir, "cellSNP.samples.tsv"), sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+  
+  # Save the row names to a .tsv file
+  write.table(rownames(gctb2_AD), file = paste0(output_dir, "cellSNP.variants.tsv"), sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+}
+
+# Example usage
+library(Matrix)
+
+# Assuming gctb2_AD and gctb2_DP are already defined sparse matrices
+# Replace '/path/to/output/directory' with the desired output directory
+save2cellsnp(gctb2_AD, gctb2_DP, "/home/linxy29/data/maester/oagct/gctb2/HEMO_pipeline_maester_cellSNP_gctb2subset/")
+```
+
 Modify CNV file
 
 ```{r}
-gctb2_cnv = rbind(gct86_cnv, gct98_cnv) %>% 
+gctb2_anno = rbind(gct86_cnv, gct98_cnv) %>% 
   mutate(cellID = str_remove(cell, "-1")) %>% 
   rename(cell_label = clone) %>% 
   select(cellID, cell_label)
 ```
 
+```{r}
+write_csv(gctb2_cnv, file = "/home/linxy29/data/maester/oagct/gctb2/HEMO_pipeline_maester_cellSNP_refHCA_anno.csv")
+```
+
+Modify cell type data
+
+```{r}
+gctb2_anno = gctb2_anno %>% 
+  mutate(cellID = str_remove(barcode, "-1"),
+         cell_label = ifelse(celltype == "Mesenchymal", "Tumor", "Normal")) %>% 
+  select(cellID, cell_label)
+```
+
+
 ### Apply DCATS algorithm
 
 ```{r}
 ## subset cells in AD and DP
-common_barcode = intersect(gctb2_cnv$cellID, colnames(gctb2_AD))
+common_barcode = intersect(gctb2_anno$cellID, colnames(gctb2_AD))
 subset_AD = gctb2_AD[,common_barcode]
 subset_DP = gctb2_DP[,common_barcode]
-subset_cell_wClone = gctb2_cnv %>% 
+subset_cell_wClone = gctb2_anno %>% 
   filter(cellID %in% common_barcode)
 subset_AD[1:5, 1:5]
 subset_cell_wClone %>% head()
@@ -201,6 +283,13 @@ dim(subset_AD)
 dim(subset_DP)
 dim(subset_cell_wClone)
 ```
+
+```{r}
+res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = "Tumor", ident.2 = "Normal")
+saveRDS(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.rds")
+write_csv(res %>% as.data.frame() %>% rownames_to_column('variant'), file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.csv")
+```
+
 
 ```{r}
 resL = list()
@@ -216,10 +305,55 @@ for (group in groupV) {
 }
 res = do.call(rbind, resL)
 saveRDS(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.rds")
-write_csv(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.cvs")
+write_csv(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.csv")
 ```
 
 ```{r}
 head(res)
+```
+
+### select variants seperately
+
+L86 sample first
+
+```{r}
+## select L86 sample
+gct86_anno = gctb2_anno %>% 
+  filter(str_detect(cellID, '^L86'))
+## subset cells in AD and DP
+common_barcode = intersect(gct86_anno$cellID, colnames(gct86_AD_mtx))
+subset_AD = gct86_AD_mtx[,common_barcode]
+subset_DP = gct86_DP_mtx[,common_barcode]
+subset_cell_wClone = gct86_anno %>% 
+  filter(cellID %in% common_barcode)
+subset_AD[1:5, 1:5]
+subset_cell_wClone %>% head()
+dim(subset_AD)
+dim(subset_DP)
+dim(subset_cell_wClone)
+```
+
+```{r}
+## select L86 sample
+gct98_anno = gctb2_anno %>% 
+  filter(str_detect(cellID, '^L98'))
+## subset cells in AD and DP
+common_barcode = intersect(gct98_anno$cellID, colnames(gct98_AD_mtx))
+subset_AD = gct98_AD_mtx[,common_barcode]
+subset_DP = gct98_DP_mtx[,common_barcode]
+subset_cell_wClone = gct98_anno %>% 
+  filter(cellID %in% common_barcode)
+subset_AD[1:5, 1:5]
+subset_cell_wClone %>% head()
+dim(subset_AD)
+dim(subset_DP)
+dim(subset_cell_wClone)
+```
+
+
+```{r}
+res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = "Tumor", ident.2 = "Normal")
+saveRDS(res, file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.rds")
+write_csv(res %>% as.data.frame() %>% rownames_to_column('variant'), file = "/home/linxy29/data/maester/oagct/gctb2/variant_selection/temp_res.csv")
 ```
 

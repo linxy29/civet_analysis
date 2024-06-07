@@ -27,6 +27,8 @@ DimPlot(GCTB8.combined.V2)
 
 ```{r}
 gctb2 = subset(GCTB8.combined.V2, subset = orig.ident == c("L86", "L98"))
+gctb2_annotation = data.frame(celltype = Idents(gctb2)) %>% rownames_to_column("barcode")
+write_csv(gctb2_annotation, file = "/home/linxy29/data/GCTB/gctb2_anno.csv")
 saveRDS(gctb2, "/home/linxy29/data/maester/oagct/gctb2.rds")
 gct86 = subset(GCTB8.combined.V2, subset = orig.ident == "L86")
 gct98 = subset(GCTB8.combined.V2, subset = orig.ident == "L98")
