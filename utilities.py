@@ -29,27 +29,36 @@ def load_mquad(base_path, sub_dir, prefix):
 
 ## read data from the output of cellsnp
 def load_cellsnp(input_folder):
+    import os
+    from scipy.io import mmread
+    import numpy as np
     from mquad.mquad import Mquad
     from vireoSNP.utils.vcf_utils import read_sparse_GeneINFO, load_VCF
     import numpy as np
     # Construct the VCF file path within the given input folder
     vcf_file = input_folder + "cellSNP.cells.vcf.gz"
-    # Load the VCF file, specifying biallelic_only=True
-    cell_vcf = load_VCF(vcf_file, biallelic_only=True)
-    # Print the path of the loaded VCF file
-    print("Loaded VCF file: %s" % vcf_file)
-    # Read sparse gene information from the loaded VCF data
-    cell_dat = read_sparse_GeneINFO(cell_vcf['GenoINFO'], keys=['AD', 'DP'])
-    # Include variant names in the cell data
-    cell_dat['variants'] = cell_vcf['variants']
-    # Extract AD, DP, and variant names for the output
-    AD = cell_dat['AD']
-    DP = cell_dat['DP']
-    variant_names = cell_dat['variants']
+    # if vcffile exists, read the data
+    if os.path.exists(vcf_file):
+        # Load the VCF file, specifying biallelic_only=True
+        cell_vcf = load_VCF(vcf_file, biallelic_only=True)
+        # Print the path of the loaded VCF file
+        print("Loaded VCF file: %s" % vcf_file)
+        # Read sparse gene information from the loaded VCF data
+        cell_dat = read_sparse_GeneINFO(cell_vcf['GenoINFO'], keys=['AD', 'DP'])
+        # Include variant names in the cell data
+        cell_dat['variants'] = cell_vcf['variants']
+        # Extract AD, DP, and variant names for the output
+        AD = cell_dat['AD']
+        DP = cell_dat['DP']
+        variant_names = cell_dat['variants']
+    else:
+        AD = mmread(input_folder + "cellSNP.tag.AD.mtx").tocsc()
+        DP = mmread(input_folder + "cellSNP.tag.DP.mtx").tocsc()
+        variant_names = np.genfromtxt(input_folder + "cellSNP.variants.tsv", dtype='str').tolist()
     ## read barcode
     barcode_file = input_folder + "cellSNP.samples.tsv"
     barcode = np.genfromtxt(barcode_file, dtype='str')
-    mdphd = Mquad(AD = cell_dat['AD'], DP = cell_dat['DP'], variant_names = cell_dat['variants'])
+    mdphd = Mquad(AD = AD, DP = DP, variant_names = variant_names)
     # Return the AD, DP, and variant_names
     return mdphd, barcode
 
@@ -123,6 +132,7 @@ def select_mquad(mquad, barcode, include_variant_names=None, exclude_variant_nam
     
     # Create a deep copy of the mquad object to ensure original is not modified
     new_mquad = copy.deepcopy(mquad)
+    new_barcode = barcode
     
     variants = np.array(new_mquad.variants)  # Convert to numpy array for advanced indexing
 
