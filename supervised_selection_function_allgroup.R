@@ -1,4 +1,3 @@
-
 # FindAllVariants helper function for cell grouping error checking
 ValidateAllCellGroups <- function(AD_mat, DP_mat, clone_mat, min.cells.group) {
   if (!all(colnames(AD_mat) == colnames(DP_mat))) {
@@ -20,6 +19,39 @@ ValidateAllCellGroups <- function(AD_mat, DP_mat, clone_mat, min.cells.group) {
   }
   return(unique(clone_mat$cell_label)[!unique(clone_mat$cell_label) %in% mis_label])
 }
+
+# example
+# library(dplyr)
+# 
+# # Sample data
+# ad_mat <- data.frame(
+#   Cell1 = c(10, 20, 30),
+#   Cell2 = c(15, 25, 35),
+#   Cell3 = c(10, 20, 30),
+#   Cell4 = c(15, 25, 35)
+# )
+# rownames(ad_mat) <- c("Variant1", "Variant2", "Variant3")
+# 
+# dp_mat <- data.frame(
+#   Cell1 = c(100, 200, 300),
+#   Cell2 = c(150, 250, 350),
+#   Cell3 = c(100, 200, 300),
+#   Cell4 = c(150, 250, 350)
+# )
+# rownames(dp_mat) <- c("Variant1", "Variant2", "Variant3")
+# 
+# clone_mat <- data.frame(
+#   cellID = c("Cell1", "Cell2", "Cell3", "Cell4"),
+#   cell_label = c("Label1", "Label1", "Label2", "Label3")
+# )
+# 
+# min.cells.group <- 2
+# 
+# # Validate cell groups
+# valid_labels <- ValidateAllCellGroups(ad_mat, dp_mat, clone_mat, min.cells.group)
+# print("Valid labels:")
+# print(valid_labels)
+
 
 performMultiLevelStatisticalTests <- function(df_use, use_random_effect) {
   library(aod)
