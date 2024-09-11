@@ -8,19 +8,39 @@ library(tidyverse)
 library(Seurat)
 ```
 
+```{r}
+theme_set(theme_classic()+
+            theme(panel.border = element_blank(),
+          legend.key = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(),
+          panel.grid.minor = element_blank(), 
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          legend.background = element_blank(),
+          plot.background = element_rect(fill = "transparent",colour = NA)) + 
+            theme(axis.text=element_text(size=12), axis.title=element_text(size=13))+
+            theme(strip.text.x = element_text(size = 13), strip.text.y = element_text(size = 13)) +
+            theme(plot.title = element_text(size = 13),plot.subtitle = element_text(size = 13)) +
+            theme(legend.title = element_text(size=13), #change legend title font size
+                  legend.text = element_text(size=10)) + 
+  theme(plot.title = element_text(hjust = 0.5)))
+```
+
 ## bpdcn_TCR
 
 ```{r}
-source("./supervised_selection_function_twogroup.R")
+source("./civet_function_v1.R")
 ```
 
 ### Read in allel frequency information
 
 ```{r}
+sample_name = "P4_ST_vis_rep1"
 ## zcat cellSNP.base.vcf.gz | grep -v '^#' | awk '{print $2$4">"$5}' > cellSNP.variants.tsv
 # Define paths to input files for better readability and maintenance
 #base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/mquad_pipeline/cellSNP/"
-base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/bpdcn712_assemble_trimmed_aligned_mt_addtag_cellSNP0/"
+base_path <- paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/cellSNP0/")
 ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
 dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
 features_path <- file.path(base_path, "cellSNP.variants.tsv")
@@ -56,7 +76,8 @@ af_mtx[1:10, 1:10]
 ### Read in TCR information
 
 ```{r}
-bpdcn_TCR = read_csv("/home/linxy29/data/maester/maester_paper/bpdcn712/bpdcn_clone.csv")
+metadata = read_csv(paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/metadata.csv"))
+colnames(metadata) = c("barcode", colnames(metadata)[-1])
 ```
 
 
@@ -66,28 +87,46 @@ bpdcn_TCR = read_csv("/home/linxy29/data/maester/maester_paper/bpdcn712/bpdcn_cl
 
 ```{r}
 ## subset cells with clone information
-cell_wClone = bpdcn_TCR %>% 
-  mutate(barcode = str_remove(barcode, "-1")) %>% 
-  filter(!is.na(TRB_CDR3)) %>% 
-  filter(!is.na(MT_clone))
+clone_mat = metadata %>% 
+  #mutate(barcode = str_remove(barcode, "-1")) %>% 
+  column_to_rownames("barcode") %>% 
+  select(Tumor_KC_Basal, Tumor_KC_Cyc, Tumor_KC_Diff)
 ## subset cells in AD and DP
-common_barcode = intersect(cell_wClone$barcode, colnames(AD_mtx))
+common_barcode = intersect(rownames(clone_mat), colnames(AD_mtx))
 subset_AD = AD_mtx[,common_barcode]
 subset_DP = DP_mtx[,common_barcode]
-subset_cell_wClone = cell_wClone %>% 
-  filter(barcode %in% common_barcode)
+subset_clone_mat = clone_mat[common_barcode, ]
 subset_AD[1:5, 1:5]
-subset_cell_wClone %>% head()
+subset_clone_mat %>% head()
 dim(subset_AD)
 dim(subset_DP)
-dim(subset_cell_wClone)
+dim(subset_clone_mat)
+```
+
+## Plot the coverage 
+
+
+```{r}
+coverage.info = data.frame(pos = as.numeric(gsub("[^0-9]", "", rownames(DP_mtx))), mean_dp = rowMeans(DP_mtx), mean_ad = rowMeans(AD_mtx))
+coverage.info %>% 
+ggplot(aes(x = pos)) +
+  geom_col(aes(y = mean_dp, fill = "mean_dp")) +
+  geom_col(aes(y = mean_ad, fill = "mean_ad")) +
+  xlab("Position at the chrM") +
+  ylab("Reads count") +
+  ggtitle(str_c("The mean coverage of total coverage and mutant coverage"))
+#ggsave(str_c("~/data/maester/organoid/D", sample, "/scRNA_MAESTER_coverage.png"),height = 8, width = 12)
+```
+
+## Apply CIVET
+
+```{r}
+sample_DP = subset_DP[2200:2300, 650:750]
+sample_AD = subset_AD[2200:2300, 650:750]
+sample_clone_mat = subset_clone_mat[650:750,]
 ```
 
 ```{r}
-sample_DP = subset_DP[3800:3900, 2800:2900]
-sample_AD = subset_AD[3800:3900, 2800:2900]
-sample_clone_mat = subset_cell_wClone[2800:2900,] %>% 
-  select(barcode, TRB_CDR3)
-colnames(sample_clone_mat) = c("cellID", "cell_label")
-save(sample_AD, sample_DP, sample_clone_mat, file = "sample_multi_AD_DP_clone_mat.RData")
+res = supervised_glm(AD_mat = sample_AD, DP_mat = sample_DP, clone_mat = sample_clone_mat, minDP = 5, use_random_effect = FALSE)
 ```
+

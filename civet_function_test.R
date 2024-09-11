@@ -251,6 +251,67 @@ testValidateAllCellGroups <- function() {
   # Note: Ensure that the ValidateAllCellGroups function is loaded into the R environment before running this test function.
 }
 
+test_CheckDf <- function() {
+  # Test 1: Less than 3 rows
+  df1 <- data.frame(a = c(1, 2), b = c(3, 4))
+  result1 <- CheckDf(df1)
+  if (result1 == TRUE) {
+    print("Test 1 passed: Skipped as expected for less than 3 rows.")
+  } else {
+    print("Test 1 failed.")
+  }
+  
+  # Test 2: Column with only one unique value
+  df2 <- data.frame(a = rep("a", 3), b = rep("b", 3))
+  result2 <- CheckDf(df2)
+  if (result2 == TRUE) {
+    print("Test 2 passed: Skipped as expected for a column with one unique value.")
+  } else {
+    print("Test 2 failed.")
+  }
+  
+  # Test 3: Valid dataframe with numeric values
+  df3 <- data.frame(a = c(1, 2, 3), b = c(4, 5, 6))
+  result3 <- CheckDf(df3)
+  if (result3 == FALSE) {
+    print("Test 3 passed: Proceed as expected for valid dataframe.")
+  } else {
+    print("Test 3 failed.")
+  }
+}
+
+test_supervised_glm <- function() {
+  # Mock matrices setup
+  AD_mat <- matrix(c(1, 2, 3, 4), nrow = 2, dimnames = list(c("V1", "V2"), c("C1", "C2")))
+  DP_mat <- matrix(c(5, 6, 7, 8), nrow = 2, dimnames = list(c("V1", "V2"), c("C1", "C2")))
+  clone_mat <- data.frame(cloneA = c("A", "B"), row.names = c("C1", "C2"))
+  
+  # Test 1: Check if variant and cell names match
+  tryCatch({
+    supervised_glm(AD_mat, DP_mat, clone_mat)
+    print("Test 1 passed: Variants and cell names match.")
+  }, error = function(e) {
+    print(paste("Test 1 failed:", e$message))
+  })
+  
+  # Test 2: Mismatch in column names
+  clone_mat_mismatch <- data.frame(cloneA = c("A", "B"), row.names = c("C3", "C4"))
+  tryCatch({
+    supervised_glm(AD_mat, DP_mat, clone_mat_mismatch)
+    print("Test 2 failed: Function did not stop with non-matching cell names.")
+  }, error = function(e) {
+    print("Test 2 passed: Correctly stopped for non-matching cell names.")
+  })
+  
+  # Test 3: Check that CheckDf works inside supervised_glm
+  AD_mat[2, ] <- 0  # Modify to make DP_mat fail the CheckDf condition
+  result_glm <- supervised_glm(AD_mat, DP_mat, clone_mat)
+  if (is.null(result_glm)) {
+    print("Test 3 passed: CheckDf worked correctly inside supervised_glm.")
+  } else {
+    print("Test 3 failed.")
+  }
+}
 
 # Execute the tests
 testValidateCellGroupsValidInput()
@@ -265,3 +326,5 @@ testIdentsToCellsBadIdent1()
 testIdentsToCellsBadIdent2()
 test_performStatisticalTests()
 testValidateAllCellGroups()
+test_CheckDf()
+test_supervised_glm()
