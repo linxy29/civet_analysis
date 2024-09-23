@@ -43,7 +43,7 @@ new.wald.test = function (Sigma, b, Terms = NULL, L = NULL, H0 = NULL, df = NULL
 CheckDf <- function(df) {
   # 1. Check if the number of rows is less than 3
   if (nrow(df) < 3) {
-    print("Skipping: The number of rows is less than 3.")
+    #print("Skipping: The number of rows is less than 3.")
     return(TRUE)
   }
   
@@ -55,10 +55,16 @@ CheckDf <- function(df) {
     if (!is.numeric(column)) {
       # Check if the column contains only one unique value
       if (length(unique(column)) == 1) {
-        print(paste("Skipping: Column", col_name, "has only one unique value."))
+        #print(paste("Skipping: Column", col_name, "has only one unique value."))
         return(TRUE)
       }
     }
+  }
+  
+  # 3. Check if the ref or alt is all 0
+  if (sum(df$n1) == 0 | sum(df$ref_count) == 0) {
+    #print("Skipping: It is all ref or alt for this SNP.")
+    return(TRUE)
   }
   
   return(FALSE)  # If none of the conditions are met, proceed
@@ -90,9 +96,10 @@ supervised_glm = function(AD_mat = NULL, DP_mat = NULL, clone_mat = NULL, minDP 
   
   V <- nrow(AD_mat) ## number of variants
   for (c in seq_len(ncol(clone_mat))) {  ## iterate through different clone
+    print(paste0("The covariate number processing is: ", as.character(c)))
     sub_LR_val = rep(NA, V)
     for (v in seq_len(nrow(AD_mat))) {
-      #for (v in 3848:nrow(AD_mat)) {  
+      #print(paste0("The c number is: ", as.character(c), ", the number v is: ", as.character(v)))
       if(sum(DP_mat[v,]>minDP) == 0) {
         next
       }
@@ -108,20 +115,21 @@ supervised_glm = function(AD_mat = NULL, DP_mat = NULL, clone_mat = NULL, minDP 
       if (CheckDf(df_tmp)) {
         next
       }
-      if(length(unique(df_tmp[,colnames(clone_mat)[c]])) == 1){
-        next
-        if (sum(df_tmp$n1) > 0) {
-          Wald_pvals[v,c] = 0.013
-          sub_LR_val[v] = 0.013
-        }
-      }
       formula_fm0 <- as.formula("cbind(n1, ref_count) ~ 1")
       fm0 <- aod::betabin(formula_fm0, ~1, data = df_tmp, warnings = FALSE)
       if (use_random_effect == FALSE) {
         formula_fm1 <- as.formula(paste0("cbind(n1, ref_count)", "~ 1+", colnames(clone_mat)[c], sep = ""))
         fm1 <- aod::betabin(formula_fm1, ~1, data = df_tmp, warnings = FALSE)
-        wald_res = new.wald.test(b = aod::coef(fm1), Sigma = aod::vcov(fm1), Terms = 2:length(aod::coef(fm1)))
-        Wald_pvals[v,c] = wald_res$result$chi2[3]
+        # Use tryCatch to handle any errors in wald_res
+        wald_res <- tryCatch({
+          new.wald.test(b = aod::coef(fm1), Sigma = aod::vcov(fm1), Terms = 2:length(aod::coef(fm1)))
+        }, error = function(e) {
+          #message(paste("Error in Wald test for variant", v, "and clone", c, ": ", e$message))
+          return(NULL)  # Return NULL on error
+        })
+        if (!is.null(wald_res)) {
+          Wald_pvals[v,c] = wald_res$result$chi2[3]
+        }
       } else {
         random_effect <- as.formula(paste0("~", colnames(clone_mat)[c]))
         fm1 <- aod::betabin(formula_fm0, random_effect, data = df_tmp, warnings = FALSE)

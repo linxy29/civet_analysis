@@ -30,7 +30,7 @@ theme_set(theme_classic()+
 ## bpdcn_TCR
 
 ```{r}
-source("./civet_function_v1.R")
+source("./civet_function_v2.R")
 ```
 
 ### Read in allel frequency information
@@ -114,8 +114,8 @@ ggplot(aes(x = pos)) +
   geom_col(aes(y = mean_ad, fill = "mean_ad")) +
   xlab("Position at the chrM") +
   ylab("Reads count") +
-  ggtitle(str_c("The mean coverage of total coverage and mutant coverage"))
-#ggsave(str_c("~/data/maester/organoid/D", sample, "/scRNA_MAESTER_coverage.png"),height = 8, width = 12)
+  ggtitle(str_c("The mean coverage of total reads and mutant reads - ", sample_name))
+ggsave(paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/mean_coverage.png"),height = 8, width = 12)
 ```
 
 ## Apply CIVET
@@ -127,6 +127,21 @@ sample_clone_mat = subset_clone_mat[650:750,]
 ```
 
 ```{r}
-res = supervised_glm(AD_mat = sample_AD, DP_mat = sample_DP, clone_mat = sample_clone_mat, minDP = 5, use_random_effect = FALSE)
+## The following command is used for testing
+#res = supervised_glm(AD_mat = sample_AD, DP_mat = sample_DP, clone_mat = sample_clone_mat, minDP = 5, use_random_effect = FALSE)
+## The following command is true run
+print(Sys.time())
+res = supervised_glm(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_clone_mat, minDP = 5, use_random_effect = FALSE)
+saveRDS(res, file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/temp_res.rds"))
+res = readRDS(file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/temp_res.rds"))
+#res = readRDS(file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/civet_noRandom_minDP5.rds"))
+resDF = res[[1]] %>% as.data.frame() %>% mutate(value = names(res)[1]) %>% rownames_to_column("variant")
+for (i in 2:length(res)){
+  tmpDF = res[[i]] %>% as.data.frame() %>% mutate(value = names(res)[i]) %>% rownames_to_column("variant")
+  resDF = rbind(resDF, tmpDF)
+}
+write.csv(resDF, file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/temp_res.csv"), row.names = FALSE)
+#write.csv(resDF, file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/civet_noRandom_minDP5.csv"))
+print(Sys.time())
 ```
 

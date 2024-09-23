@@ -23,19 +23,22 @@ names(x = cell.type) <- levels(GCTB8.combined.V2)
 GCTB8.combined.V2 <- RenameIdents(GCTB8.combined.V2,cell.type)
 GCTB8.combined.V2$cell.type <- Idents(GCTB8.combined.V2)
 DimPlot(GCTB8.combined.V2)
-```
-
-```{r}
 gctb2 = subset(GCTB8.combined.V2, subset = orig.ident == c("L86", "L98"))
 gctb2_annotation = data.frame(celltype = Idents(gctb2)) %>% rownames_to_column("barcode")
 write_csv(gctb2_annotation, file = "/home/linxy29/data/GCTB/gctb2_anno.csv")
 saveRDS(gctb2, "/home/linxy29/data/maester/oagct/gctb2.rds")
+```
+
+```{r}
+gctb2 = readRDS("/home/linxy29/data/maester/oagct/gctb2/gctb2.rds")
 gct86 = subset(GCTB8.combined.V2, subset = orig.ident == "L86")
 gct98 = subset(GCTB8.combined.V2, subset = orig.ident == "L98")
 cloneID_df_gct86 = read_csv(str_c('/home/linxy29/data/maester/oagct/', 'gct86', '/cloneID_df_4layers.csv'))
 cloneID_df_gct98 = read_csv(str_c('/home/linxy29/data/maester/oagct/', 'gct98', '/cloneID_df_4layers.csv'))
 head(cloneID_df_gct86)
 ```
+
+
 
 ```{r}
 ## modify cloneID file
