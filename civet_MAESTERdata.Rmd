@@ -1,0 +1,286 @@
+---
+title: "CIVET in MAESTER data"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(Seurat)
+```
+
+## bpdcn_TCR
+
+```{r}
+source("./supervised_selection_function_twogroup.R")
+```
+
+### Read in allel frequency information
+
+```{r}
+## zcat cellSNP.base.vcf.gz | grep -v '^#' | awk '{print $2$4">"$5}' > cellSNP.variants.tsv
+# Define paths to input files for better readability and maintenance
+#base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/mquad_pipeline/cellSNP/"
+base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/bpdcn712_assemble_trimmed_aligned_mt_addtag_cellSNP0/"
+ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
+dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
+features_path <- file.path(base_path, "cellSNP.variants.tsv")
+cells_path <- file.path(base_path, "cellSNP.samples.tsv")
+
+# Function to read matrix with error checking
+read_mtx_safe <- function(mtx, features, cells, feature.column = 1) {
+  if (!file.exists(mtx) || !file.exists(features) || !file.exists(cells)) {
+    stop("One or more input files do not exist.")
+  }
+  
+  # Assuming ReadMtx is a predefined function or part of a package not shown here
+  ReadMtx(mtx = mtx, features = features, cells = cells, feature.column = feature.column)
+}
+
+# Read allele depth (AD) and total depth (DP) matrices
+AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+
+# Calculate allele frequencies, handling division by zero and NA values
+af_mtx <- AD_mtx / DP_mtx
+af_mtx[is.na(af_mtx)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(AD_mtx), "\n")
+cat("Dimensions of DP_mtx:", dim(DP_mtx), "\n")
+cat("Dimensions of af_mtx:", dim(af_mtx), "\n")
+
+# Display a subset of the allele frequency matrix
+af_mtx[1:10, 1:10]
+```
+
+### Read in TCR information
+
+```{r}
+bpdcn_TCR = read_csv("/home/linxy29/data/maester/maester_paper/bpdcn712/bpdcn_clone.csv")
+```
+
+
+### Apply DCATS algorithm
+
+3326 cells have TCR information. 
+
+```{r}
+## subset cells with clone information
+cell_wClone = bpdcn_TCR %>% 
+  mutate(barcode = str_remove(barcode, "-1")) %>% 
+  filter(!is.na(TRB_CDR3)) %>% 
+  filter(!is.na(MT_clone))
+## subset cells in AD and DP
+common_barcode = intersect(cell_wClone$barcode, colnames(AD_mtx))
+subset_AD = AD_mtx[,common_barcode]
+subset_DP = DP_mtx[,common_barcode]
+subset_cell_wClone = cell_wClone %>% 
+  filter(barcode %in% common_barcode)
+subset_AD[1:5, 1:5]
+subset_cell_wClone %>% head()
+dim(subset_AD)
+dim(subset_DP)
+dim(subset_cell_wClone)
+```
+
+```{r}
+sample_DP = subset_DP[3800:3900, 2800:2900]
+sample_AD = subset_AD[3800:3900, 2800:2900]
+sample_clone_mat = subset_cell_wClone[2800:2900,] %>% 
+  select(barcode, TRB_CDR3)
+colnames(sample_clone_mat) = c("cellID", "cell_label")
+save(sample_AD, sample_DP, sample_clone_mat, file = "sample_multi_AD_DP_clone_mat.RData")
+```
+
+
+
+```{r}
+clone_mat = subset_cell_wClone %>% select(barcode, TRB_CDR3)
+colnames(clone_mat) = c("cellID", "cell_label")
+res = FindAllVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = clone_mat)
+saveRDS(res, file = "/home/linxy29/data/maester/maester_paper/bpdcn712/variant_selection/version2/temp_res.rds")
+write_csv(res, file = "/home/linxy29/data/maester/maester_paper/bpdcn712/variant_selection/version2/temp_res.cvs")
+```
+
+```{r}
+true_variant_list = c("2593G>A", "683G>A", "6185T>C", "6205G>A", "9164T>C", "3628A>G", "1415G>A", "9753G>A", "10158T>A", "6293T>C", "15812G>A", "1171A>G", "1222A>G", "8697G>A", "15299T>C")
+true_variant_idx = c(2593, 683, 6185, 6205, 9164, 3628, 1415, 9753, 10158, 6293, 15812, 1171, 1222, 8697, 15299)
+```
+
+```{r}
+subset_res = res[true_variant_idx,] 
+bin_subset_res = subset_res
+bin_subset_res[is.na(subset_res)] = 0
+bin_subset_res[subset_res >= 0.1] = 0
+bin_subset_res[subset_res < 0.1] = 1
+```
+
+```{r}
+# Load the package
+library(pheatmap)
+
+# Create the heatmap
+pheatmap(bin_subset_res, 
+         color = c("white", "red")) # Color of the numbers
+```
+
+
+```{r}
+bin_subset_res[subset_res < 0.05] = 1
+```
+
+
+```{r}
+groups = colnames(res)
+for (group in groups) {
+  print(paste0("The current group is: ", group))
+  pvals = res[,group] %>% na.omit()
+  sig_pvals = pvals[pvals < 0.05]
+  sig_variants = names(sig_pvals)
+}
+```
+
+
+### select variants based on the pval
+
+```{r}
+## Wald test
+pval = res$LRT_fdr[,1]
+folder_name = '/home/linxy29/data/maester/maester_paper/bpdcn712/variant_selection/supervised_glm_LRT_fdr/'
+if (!dir.exists(folder_name)) {
+  dir.create(folder_name)
+}
+filtered_AD = AD_mtx[!is.na(pval) & pval<0.05,]
+filtered_DP = DP_mtx[!is.na(pval) & pval<0.05,]
+Matrix::writeMM(filtered_AD, paste0(folder_name, "passed_ad.mtx"))
+Matrix::writeMM(filtered_DP, paste0(folder_name, "passed_dp.mtx"))
+write.table(rownames(filtered_AD), file = paste0(folder_name, "passed_variant_names.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(colnames(filtered_AD), file = paste0(folder_name, "passed_sample_names.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+```{r}
+write.table(common_barcode, file = paste0(folder_name, "passed_sample_names.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+## k562_bt142
+
+### Read in allel frequency information
+
+
+```{r}
+source("./supervised_selection_function_twogroup.R")
+```
+
+```{r}
+# Define paths to input files for better readability and maintenance
+base_path <- "/home/linxy29/data/maester/maester_paper/k562_bt142/maester/trimmed_starsolo_chrM_cellSNP0"
+ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
+dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
+features_path <- file.path(base_path, "cellSNP.variants.tsv")
+cells_path <- file.path(base_path, "cellSNP.samples.tsv")
+
+# Function to read matrix with error checking
+read_mtx_safe <- function(mtx, features, cells, feature.column = 1) {
+  if (!file.exists(mtx) || !file.exists(features) || !file.exists(cells)) {
+    stop("One or more input files do not exist.")
+  }
+  
+  # Assuming ReadMtx is a predefined function or part of a package not shown here
+  ReadMtx(mtx = mtx, features = features, cells = cells, feature.column = feature.column)
+}
+
+# Read allele depth (AD) and total depth (DP) matrices
+AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+
+# Calculate allele frequencies, handling division by zero and NA values
+af_mtx <- AD_mtx / DP_mtx
+af_mtx[is.na(af_mtx)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(AD_mtx), "\n")
+cat("Dimensions of DP_mtx:", dim(DP_mtx), "\n")
+cat("Dimensions of af_mtx:", dim(af_mtx), "\n")
+
+# Display a subset of the allele frequency matrix
+af_mtx[1:10, 1:10]
+```
+
+## Read in TCR information
+
+```{r}
+cell_wClone = read_csv("/home/linxy29/data/maester/maester_paper/k562_bt142/cell_label.csv")
+```
+
+### Get sample AD, DP, clone_mat
+
+```{r}
+sample_AD = AD_mtx[2200:2300, 2000:2100]
+sample_DP = DP_mtx[2200:2300, 2000:2100]
+any(rowMeans(sample_DP) > 20)
+sample_clone_mat = cell_wClone %>% filter(barcode %in% colnames(sample_AD))
+colnames(sample_clone_mat) = c("cellID", "cell_label")
+save(sample_AD, sample_DP, sample_clone_mat, file = "sample_AD_DP_clone_mat.RData")
+```
+
+
+
+## Apply DCATS algorithm
+
+```{r}
+## subset cells in AD and DP
+common_barcode = intersect(cell_wClone$barcode, colnames(AD_mtx))
+subset_AD = AD_mtx[,common_barcode]
+subset_DP = DP_mtx[,common_barcode]
+subset_cell_wClone = cell_wClone %>% 
+  filter(barcode %in% common_barcode)
+subset_AD[1:5, 1:5]
+subset_cell_wClone %>% head()
+dim(subset_AD)
+dim(subset_DP)
+dim(subset_cell_wClone)
+```
+
+```{r}
+colnames(subset_cell_wClone) = c("cellID", "cell_label")
+res = FindVariants(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, ident.1 = "K562")
+#res = supervised_glm(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_cell_wClone, use_random_effect = FALSE)
+saveRDS(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/temp_res.rds")
+write.csv(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/temp_res.csv")
+```
+
+```{r}
+## save results as csv
+a = readRDS("/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/supervised_glm_pval.rds")
+res = do.call(cbind,a)
+colnames(res) = names(a)
+write.csv(res, file = "/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/fixed_effect/supervised_glm_pval.csv")
+```
+
+
+```{r}
+pvals_df = data.frame(Wald_pvals = res_mat[,1], LRT_pvals = res_mat[,3])
+pvals_df = pvals_df %>% 
+  mutate(log_Wald = log(Wald_pvals),
+         log_LRT = log(LRT_pval))
+plot(pvals_df$Wald_pvals, pvals_df$LRT_pvals)
+plot(pvals_df$log_Wald, pvals_df$log_LRT)
+
+```
+
+## select variants based on the pval
+
+```{r}
+## Wald test
+pval = res$ANOVA_pvals[,1]
+folder_name = '/home/linxy29/data/maester/maester_paper/k562_bt142/variant_selection/random_effect/supervised_glm_ANOVA/'
+if (!dir.exists(folder_name)) {
+  dir.create(folder_name)
+}
+filtered_AD = AD_mtx[!is.na(pval) & pval<0.05,]
+filtered_DP = DP_mtx[!is.na(pval) & pval<0.05,]
+Matrix::writeMM(filtered_AD, paste0(folder_name, "passed_ad.mtx"))
+Matrix::writeMM(filtered_DP, paste0(folder_name, "passed_dp.mtx"))
+write.table(rownames(filtered_AD), file = paste0(folder_name, "passed_variant_names.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(colnames(filtered_AD), file = paste0(folder_name, "passed_sample_names.txt"), row.names = FALSE, col.names = FALSE, quote = FALSE)
+```

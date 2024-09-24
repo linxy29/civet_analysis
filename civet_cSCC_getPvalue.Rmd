@@ -1,0 +1,147 @@
+---
+title: "CIVET in cSCC"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(Seurat)
+```
+
+```{r}
+theme_set(theme_classic()+
+            theme(panel.border = element_blank(),
+          legend.key = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(),
+          panel.grid.minor = element_blank(), 
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          legend.background = element_blank(),
+          plot.background = element_rect(fill = "transparent",colour = NA)) + 
+            theme(axis.text=element_text(size=12), axis.title=element_text(size=13))+
+            theme(strip.text.x = element_text(size = 13), strip.text.y = element_text(size = 13)) +
+            theme(plot.title = element_text(size = 13),plot.subtitle = element_text(size = 13)) +
+            theme(legend.title = element_text(size=13), #change legend title font size
+                  legend.text = element_text(size=10)) + 
+  theme(plot.title = element_text(hjust = 0.5)))
+```
+
+## bpdcn_TCR
+
+```{r}
+source("./civet_function_v2.R")
+```
+
+### Read in allel frequency information
+
+```{r}
+sample_name = "P4_ST_vis_rep1"
+## zcat cellSNP.base.vcf.gz | grep -v '^#' | awk '{print $2$4">"$5}' > cellSNP.variants.tsv
+# Define paths to input files for better readability and maintenance
+#base_path <- "/home/linxy29/data/maester/maester_paper/bpdcn712/maester/mquad_pipeline/cellSNP/"
+base_path <- paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/cellSNP0/")
+ad_mtx_path <- file.path(base_path, "cellSNP.tag.AD.mtx")
+dp_mtx_path <- file.path(base_path, "cellSNP.tag.DP.mtx")
+features_path <- file.path(base_path, "cellSNP.variants.tsv")
+cells_path <- file.path(base_path, "cellSNP.samples.tsv")
+
+# Function to read matrix with error checking
+read_mtx_safe <- function(mtx, features, cells, feature.column = 1) {
+  if (!file.exists(mtx) || !file.exists(features) || !file.exists(cells)) {
+    stop("One or more input files do not exist.")
+  }
+  
+  # Assuming ReadMtx is a predefined function or part of a package not shown here
+  ReadMtx(mtx = mtx, features = features, cells = cells, feature.column = feature.column)
+}
+
+# Read allele depth (AD) and total depth (DP) matrices
+AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+
+# Calculate allele frequencies, handling division by zero and NA values
+af_mtx <- AD_mtx / DP_mtx
+af_mtx[is.na(af_mtx)] <- 0  # Replace NA values resulting from division by zero with 0
+
+# Output dimensions of matrices for verification
+cat("Dimensions of AD_mtx:", dim(AD_mtx), "\n")
+cat("Dimensions of DP_mtx:", dim(DP_mtx), "\n")
+cat("Dimensions of af_mtx:", dim(af_mtx), "\n")
+
+# Display a subset of the allele frequency matrix
+af_mtx[1:10, 1:10]
+```
+
+### Read in TCR information
+
+```{r}
+metadata = read_csv(paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/metadata.csv"))
+colnames(metadata) = c("barcode", colnames(metadata)[-1])
+```
+
+
+### Apply DCATS algorithm
+
+3326 cells have TCR information. 
+
+```{r}
+## subset cells with clone information
+clone_mat = metadata %>% 
+  #mutate(barcode = str_remove(barcode, "-1")) %>% 
+  column_to_rownames("barcode") %>% 
+  select(Tumor_KC_Basal, Tumor_KC_Cyc, Tumor_KC_Diff)
+## subset cells in AD and DP
+common_barcode = intersect(rownames(clone_mat), colnames(AD_mtx))
+subset_AD = AD_mtx[,common_barcode]
+subset_DP = DP_mtx[,common_barcode]
+subset_clone_mat = clone_mat[common_barcode, ]
+subset_AD[1:5, 1:5]
+subset_clone_mat %>% head()
+dim(subset_AD)
+dim(subset_DP)
+dim(subset_clone_mat)
+```
+
+## Plot the coverage 
+
+
+```{r}
+coverage.info = data.frame(pos = as.numeric(gsub("[^0-9]", "", rownames(DP_mtx))), mean_dp = rowMeans(DP_mtx), mean_ad = rowMeans(AD_mtx))
+coverage.info %>% 
+ggplot(aes(x = pos)) +
+  geom_col(aes(y = mean_dp, fill = "mean_dp")) +
+  geom_col(aes(y = mean_ad, fill = "mean_ad")) +
+  xlab("Position at the chrM") +
+  ylab("Reads count") +
+  ggtitle(str_c("The mean coverage of total reads and mutant reads - ", sample_name))
+ggsave(paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/mean_coverage.png"),height = 8, width = 12)
+```
+
+## Apply CIVET
+
+```{r}
+sample_DP = subset_DP[2200:2300, 650:750]
+sample_AD = subset_AD[2200:2300, 650:750]
+sample_clone_mat = subset_clone_mat[650:750,]
+```
+
+```{r}
+## The following command is used for testing
+#res = supervised_glm(AD_mat = sample_AD, DP_mat = sample_DP, clone_mat = sample_clone_mat, minDP = 5, use_random_effect = FALSE)
+## The following command is true run
+print(Sys.time())
+res = supervised_glm(AD_mat = subset_AD, DP_mat = subset_DP, clone_mat = subset_clone_mat, minDP = 5, use_random_effect = FALSE)
+saveRDS(res, file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/temp_res.rds"))
+res = readRDS(file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/temp_res.rds"))
+#res = readRDS(file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/civet_noRandom_minDP5.rds"))
+resDF = res[[1]] %>% as.data.frame() %>% mutate(value = names(res)[1]) %>% rownames_to_column("variant")
+for (i in 2:length(res)){
+  tmpDF = res[[i]] %>% as.data.frame() %>% mutate(value = names(res)[i]) %>% rownames_to_column("variant")
+  resDF = rbind(resDF, tmpDF)
+}
+write.csv(resDF, file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/temp_res.csv"), row.names = FALSE)
+#write.csv(resDF, file = paste0("/home/linxy29/data/spaceclone/cSCC/", sample_name, "/civet_res/civet_noRandom_minDP5.csv"))
+print(Sys.time())
+```
+
