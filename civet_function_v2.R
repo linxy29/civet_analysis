@@ -1,6 +1,58 @@
 library(tidyverse)
 library(Seurat)
 
+load_matrices <- function(
+  base_path = NULL,
+  ad_mtx_path = file.path(base_path, "cellSNP.tag.AD.mtx"),
+  dp_mtx_path = file.path(base_path, "cellSNP.tag.DP.mtx"),
+  features_path = file.path(base_path, "cellSNP.variants.tsv"),
+  cells_path = file.path(base_path, "cellSNP.samples.tsv")
+) {
+  # Check and generate 'cellSNP.variants.tsv' if it does not exist
+  if (!file.exists(features_path)) {
+    vcf_path <- file.path(base_path, "cellSNP.base.vcf.gz")
+    if (!file.exists(vcf_path)) {
+      stop(paste("VCF file does not exist:", vcf_path))
+    }
+    
+    # Shell command to generate the variants file
+    cmd <- sprintf("zcat %s | grep -v '^#' | awk '{print $2$4\">\"$5}' > %s", vcf_path, features_path)
+    message("Generating features file using command: ", cmd)
+    system(cmd, intern = FALSE)
+    
+    # Verify the file was created
+    if (!file.exists(features_path)) {
+      stop("Failed to generate 'cellSNP.variants.tsv'. Please check the shell command.")
+    }
+  }
+  
+  # Helper function to read matrix with error handling
+  read_mtx_safe <- function(mtx, features, cells, feature.column = 1) {
+    if (!file.exists(mtx)) stop(paste("Matrix file does not exist:", mtx))
+    if (!file.exists(features)) stop(paste("Features file does not exist:", features))
+    if (!file.exists(cells)) stop(paste("Cells file does not exist:", cells))
+    
+    # Assuming ReadMtx is a predefined function in your environment
+    ReadMtx(mtx = mtx, features = features, cells = cells, feature.column = feature.column)
+  }
+  
+  # Read AD and DP matrices
+  AD_mtx <- read_mtx_safe(ad_mtx_path, features_path, cells_path)
+  DP_mtx <- read_mtx_safe(dp_mtx_path, features_path, cells_path)
+  
+  # Validate that AD and DP matrices have the same dimensions
+  if (!all(dim(AD_mtx) == dim(DP_mtx))) {
+    stop("AD and DP matrices have different dimensions.")
+  }
+  
+  # Calculate allele frequency matrix (AF)
+  AF_mtx <- AD_mtx / DP_mtx
+  AF_mtx[is.na(AF_mtx)] <- 0  # Replace NA values (e.g., from division by zero) with 0
+  
+  # Return matrices as a list
+  return(list(AD = AD_mtx, DP = DP_mtx, AF = AF_mtx))
+}
+
 new.wald.test = function (Sigma, b, Terms = NULL, L = NULL, H0 = NULL, df = NULL, verbose = FALSE) 
 {
   if (is.null(Terms) & is.null(L)) 
@@ -41,108 +93,131 @@ new.wald.test = function (Sigma, b, Terms = NULL, L = NULL, H0 = NULL, df = NULL
 }
 
 CheckDf <- function(df) {
-  # 1. Check if the number of rows is less than 3
+  # Check if the number of rows is less than 3
   if (nrow(df) < 3) {
-    #print("Skipping: The number of rows is less than 3.")
     return(TRUE)
   }
   
-  # 2. Iterate through all columns to check for non-numeric types
-  for (col_name in names(df)) {
-    column <- df[[col_name]]
-    
-    # Check if the column is not numeric
-    if (!is.numeric(column)) {
-      # Check if the column contains only one unique value
-      if (length(unique(column)) == 1) {
-        #print(paste("Skipping: Column", col_name, "has only one unique value."))
-        return(TRUE)
-      }
-    }
+  # Ensure the required columns are present
+  required_columns <- c("n1", "ref_count")
+  if (!all(required_columns %in% colnames(df))) {
+    stop(paste("The dataframe must contain the following columns:", paste(required_columns, collapse = ", ")))
   }
   
-  # 3. Check if the ref or alt is all 0
-  if (sum(df$n1) == 0 | sum(df$ref_count) == 0) {
-    #print("Skipping: It is all ref or alt for this SNP.")
+  # Check for non-numeric columns with only one unique value
+  non_numeric_single_value <- sapply(df, function(column) {
+    !is.numeric(column) && length(unique(column)) == 1
+  })
+  
+  if (any(non_numeric_single_value)) {
+    return(TRUE)
+  }
+  
+  # Check if the 'n1' or 'ref_count' columns sum to zero
+  if (sum(df$n1) == 0 || sum(df$ref_count) == 0) {
     return(TRUE)
   }
   
   return(FALSE)  # If none of the conditions are met, proceed
 }
 
-
-supervised_glm = function(AD_mat = NULL, DP_mat = NULL, clone_mat = NULL, minDP = 20, use_random_effect = FALSE){
+supervised_glm <- function(AD_mat = NULL, DP_mat = NULL, clone_mat = NULL, minDP = 20, use_random_effect = FALSE) {
+  # Ensure all matrices have proper row and column names
   if (is.null(rownames(AD_mat))) 
-    rownames(AD_mat) <- paste0("variant_", seq(nrow(AD_mat)))
+    rownames(AD_mat) <- paste0("variant_", seq_len(nrow(AD_mat)))
   if (is.null(rownames(DP_mat))) 
-    rownames(DP_mat) <- paste0("variant_", seq(nrow(DP_mat)))
-  if (is.null(colnames(clone_mat))) colnames(clone_mat) <- paste0("factor_", seq(ncol(clone_mat)))
+    rownames(DP_mat) <- paste0("variant_", seq_len(nrow(DP_mat)))
+  if (is.null(colnames(clone_mat))) 
+    colnames(clone_mat) <- paste0("factor_", seq_len(ncol(clone_mat)))
   
+  # Check consistency across matrices
   if (!all(colnames(AD_mat) == colnames(DP_mat)) || !all(colnames(AD_mat) == rownames(clone_mat))) {
-    stop("Cells in AD, DP and clone matrices are not identical")
+    stop("Cells in AD, DP, and clone matrices are not identical.")
   }
   if (!all(rownames(AD_mat) == rownames(DP_mat))) {
-    stop("Variants in AD and DP matrics are not identical")
+    stop("Variants in AD and DP matrices are not identical.")
   }
   
-  LR_vals <- matrix(NA, nrow(AD_mat), ncol(clone_mat))
-  LRT_pvals <- matrix(NA, nrow(AD_mat), ncol(clone_mat))
-  Wald_pvals <- matrix(NA, nrow(AD_mat), ncol(clone_mat))
-  ANOVA_pvals <- matrix(NA, nrow(AD_mat), ncol(clone_mat))
-  LRT_fdr <- matrix(NA, nrow(AD_mat), ncol(clone_mat))
+  # Initialize result matrices with NA values
+  n_variants <- nrow(AD_mat)
+  n_clones <- ncol(clone_mat)
   
-  rownames(LR_vals) <- rownames(LRT_pvals) <- rownames(Wald_pvals) <- rownames(ANOVA_pvals) <- rownames(LRT_fdr) <- rownames(AD_mat)
-  colnames(LR_vals) <- colnames(LRT_pvals) <- colnames(Wald_pvals) <- colnames(ANOVA_pvals) <- colnames(LRT_fdr) <- colnames(clone_mat)
+  result_matrices <- lapply(c("LR_vals", "LRT_pvals", "Wald_pvals", "ANOVA_pvals", "LRT_fdr"), 
+                            function(name) matrix(NA, n_variants, n_clones, 
+                                                  dimnames = list(rownames(AD_mat), colnames(clone_mat))))
+  names(result_matrices) <- c("LR_vals", "LRT_pvals", "Wald_pvals", "ANOVA_pvals", "LRT_fdr")
   
-  V <- nrow(AD_mat) ## number of variants
-  for (c in seq_len(ncol(clone_mat))) {  ## iterate through different clone
-    print(paste0("The covariate number processing is: ", as.character(c)))
-    sub_LR_val = rep(NA, V)
-    for (v in seq_len(nrow(AD_mat))) {
-      #print(paste0("The c number is: ", as.character(c), ", the number v is: ", as.character(v)))
-      if(sum(DP_mat[v,]>minDP) == 0) {
-        next
-      }
-      total = DP_mat[v,DP_mat[v,]>minDP]
-      n1 = AD_mat[v,DP_mat[v,]>minDP]
-      clone_use = clone_mat[DP_mat[v,] > minDP,,drop = FALSE]
-      #if (!is.matrix(clone_use))
-      df_use = data.frame(n1 = n1, total = total)
-      df_use$ref_count <- df_use$total - df_use$n1
+  # Iterate through clones
+  for (c in seq_len(n_clones)) {
+    message(sprintf("Processing covariate number: %d", c))
+    sub_LR_val <- rep(NA, n_variants)
+    
+    # Iterate through variants
+    for (v in seq_len(n_variants)) {
+      # Identify valid indices for DP above the threshold
+      valid_indices <- DP_mat[v, ] > minDP
+      if (sum(valid_indices) == 0) next
+      
+      # Prepare data subset
+      total <- DP_mat[v, valid_indices]
+      n1 <- AD_mat[v, valid_indices]
+      clone_use <- clone_mat[valid_indices, , drop = FALSE]
+      df_use <- data.frame(n1 = n1, total = total, ref_count = total - n1)
       df_use <- cbind(df_use, clone_use)
-      df_tmp <- df_use[!is.na(clone_use[,c]), ]
-      # Call the check_dataframe_conditions function here
-      if (CheckDf(df_tmp)) {
-        next
-      }
+      df_tmp <- df_use[!is.na(clone_use[, c]), ]
+      
+      # Check dataframe conditions
+      if (CheckDf(df_tmp)) next
+      
+      # Fit null model
       formula_fm0 <- as.formula("cbind(n1, ref_count) ~ 1")
-      fm0 <- aod::betabin(formula_fm0, ~1, data = df_tmp, warnings = FALSE)
-      if (use_random_effect == FALSE) {
-        formula_fm1 <- as.formula(paste0("cbind(n1, ref_count)", "~ 1+", colnames(clone_mat)[c], sep = ""))
-        fm1 <- aod::betabin(formula_fm1, ~1, data = df_tmp, warnings = FALSE)
-        # Use tryCatch to handle any errors in wald_res
-        wald_res <- tryCatch({
-          new.wald.test(b = aod::coef(fm1), Sigma = aod::vcov(fm1), Terms = 2:length(aod::coef(fm1)))
-        }, error = function(e) {
-          #message(paste("Error in Wald test for variant", v, "and clone", c, ": ", e$message))
-          return(NULL)  # Return NULL on error
-        })
+      fm0 <- tryCatch(aod::betabin(formula_fm0, ~1, data = df_tmp, warnings = FALSE),
+                      error = function(e) NULL)
+      if (is.null(fm0)) next
+      
+      # Fit alternative model
+      if (!use_random_effect) {
+        formula_fm1 <- as.formula(paste0("cbind(n1, ref_count) ~ 1 + ", colnames(clone_mat)[c]))
+        fm1 <- tryCatch(aod::betabin(formula_fm1, ~1, data = df_tmp, warnings = FALSE),
+                        error = function(e) NULL)
+        if (is.null(fm1)) next
+        
+        # Wald test
+        wald_res <- tryCatch(new.wald.test(b = aod::coef(fm1), Sigma = aod::vcov(fm1), Terms = 2:length(aod::coef(fm1))),
+                             error = function(e) NULL)
         if (!is.null(wald_res)) {
-          Wald_pvals[v,c] = wald_res$result$chi2[3]
+          result_matrices$Wald_pvals[v, c] <- wald_res$result$chi2[3]
         }
       } else {
         random_effect <- as.formula(paste0("~", colnames(clone_mat)[c]))
-        fm1 <- aod::betabin(formula_fm0, random_effect, data = df_tmp, warnings = FALSE)
-        anova_res = anova(fm0, fm1)
-        ANOVA_pvals[v,c] = anova_res@anova.table$`P(> Chi2)`[2]
+        fm1 <- tryCatch(aod::betabin(formula_fm0, random_effect, data = df_tmp, warnings = FALSE),
+                        error = function(e) NULL)
+        if (is.null(fm1)) next
+        
+        # ANOVA test
+        anova_res <- tryCatch(anova(fm0, fm1), error = function(e) NULL)
+        if (!is.null(anova_res)) {
+          result_matrices$ANOVA_pvals[v, c] <- anova_res@anova.table$`P(> Chi2)`[2]
+        }
       }
-      # likelihood ratio test
-      sub_LR_val[v] <- fm0@dev - fm1@dev
+      
+      # Likelihood Ratio Test
+      if (!is.null(fm1)) {
+        sub_LR_val[v] <- fm0@dev - fm1@dev
+        result_matrices$LRT_pvals[v, c] <- tryCatch(
+          pchisq(sub_LR_val[v], df = fm1@nbpar - fm0@nbpar, lower.tail = FALSE, log.p = FALSE),
+          error = function(e) NA
+        )
+      }
     }
-    LR_vals[, c] <- sub_LR_val
-    LRT_pvals[, c] <- pchisq(sub_LR_val, df = fm1@nbpar-fm0@nbpar, lower.tail = FALSE, log.p = FALSE)
+    
+    # Store likelihood ratio values
+    result_matrices$LR_vals[, c] <- sub_LR_val
   }
-  LRT_fdr[, ] <- p.adjust(LRT_pvals, method = "fdr")
-  res <- list(Wald_pvals = Wald_pvals, ANOVA_pvals =  ANOVA_pvals, LR_vals = LR_vals, LRT_pvals = LRT_pvals, LRT_fdr = LRT_fdr)
-  return(res)
+  
+  # Adjust p-values for multiple testing
+  result_matrices$LRT_fdr[] <- p.adjust(result_matrices$LRT_pvals, method = "fdr")
+  
+  # Return result matrices
+  return(result_matrices)
 }
