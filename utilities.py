@@ -34,9 +34,17 @@ def load_cellsnp(input_folder):
     import numpy as np
     from mquad.mquad import Mquad
     from vireoSNP.utils.vcf_utils import read_sparse_GeneINFO, load_VCF
-    import numpy as np
-    # Construct the VCF file path within the given input folder
-    vcf_file = input_folder + "cellSNP.cells.vcf.gz"
+
+    # Normalize the input folder path
+    input_folder = os.path.abspath(input_folder)
+
+    # Construct file paths
+    vcf_file = os.path.join(input_folder, "cellSNP.cells.vcf.gz")
+    ad_file = os.path.join(input_folder, "cellSNP.tag.AD.mtx")
+    dp_file = os.path.join(input_folder, "cellSNP.tag.DP.mtx")
+    variants_file = os.path.join(input_folder, "cellSNP.variants.tsv")
+    barcode_file = os.path.join(input_folder, "cellSNP.samples.tsv")
+
     # if vcffile exists, read the data
     if os.path.exists(vcf_file):
         # Load the VCF file, specifying biallelic_only=True
@@ -52,11 +60,10 @@ def load_cellsnp(input_folder):
         DP = cell_dat['DP']
         variant_names = cell_dat['variants']
     else:
-        AD = mmread(input_folder + "cellSNP.tag.AD.mtx").tocsc()
-        DP = mmread(input_folder + "cellSNP.tag.DP.mtx").tocsc()
-        variant_names = np.genfromtxt(input_folder + "cellSNP.variants.tsv", dtype='str').tolist()
+        AD = mmread(ad_file).tocsc()
+        DP = mmread(dp_file).tocsc()
+        variant_names = np.genfromtxt(variants_file, dtype='str').tolist()
     ## read barcode
-    barcode_file = input_folder + "cellSNP.samples.tsv"
     barcode = np.genfromtxt(barcode_file, dtype='str')
     mdphd = Mquad(AD = AD, DP = DP, variant_names = variant_names)
     # Return the AD, DP, and variant_names
