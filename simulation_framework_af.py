@@ -804,26 +804,20 @@ if __name__ == "__main__":
     random.seed(123)
     cells, mutations, expr_df = run_basic_simulation()
     
-    # 2) Save the simulation results
-    matrices = export_mtx_for_dp_ad(cells, mutations, prefix="/Users/linxy29/Documents/Data/CIVET/simulation/cellSNP.tag")
-    expr_df.to_csv("/Users/linxy29/Documents/Data/CIVET/simulation/expression.csv", index=False)
+    # 2) Choose a single output directory
+    output_dir = "/Users/linxy29/Documents/Data/CIVET/simulation/simulation_results"
 
-    # 3) Visualize the simulation results
-    visualize_simulation_results(cells, mutations, expr_df, output_prefix="/Users/linxy29/Documents/Data/CIVET/simulation/simulation")
-    
-    # 4) Analyze allele frequency distribution
-    af_analysis = analyze_af_distribution(cells, mutations, 
-                                         "/Users/linxy29/Documents/Data/CIVET/simulation/af_analysis/af")
-    
-    # Print summary statistics for both baseline and de novo mutations
-    print("\nBaseline Mutations Summary:")
-    print(f"Count: {af_analysis['baseline_summary']['count']}")
-    print(f"Mean AF: {af_analysis['baseline_summary']['mean']:.4f}")
-    print(f"Median AF: {af_analysis['baseline_summary']['median']:.4f}")
-    print(f"Std Dev: {af_analysis['baseline_summary']['std']:.4f}")
-    
-    print("\nDe Novo Mutations Summary:")
-    print(f"Count: {af_analysis['denovo_summary']['count']}")
-    print(f"Mean AF: {af_analysis['denovo_summary']['mean']:.4f}")
-    print(f"Median AF: {af_analysis['denovo_summary']['median']:.4f}")
-    print(f"Std Dev: {af_analysis['denovo_summary']['std']:.4f}")
+    # 3) Save allele count data
+    export_mtx_for_dp_ad(cells, mutations, output_dir)
+
+    # 4) Save expression in "expression/expression.csv"
+    save_expression(expr_df, output_dir)
+
+    # 5) Visualize heatmap + PCA/UMAP in "figures/"
+    visualize_simulation_results(cells, mutations, expr_df, output_dir)
+
+    # 6) Analyze AF distribution in "af_analysis/"
+    af_analysis = analyze_af_distribution(cells, mutations, output_dir)
+
+    # Optionally inspect the returned summary
+    print(af_analysis)
