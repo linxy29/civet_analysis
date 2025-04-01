@@ -1,0 +1,28 @@
+# config.yaml
+# Stem cell growth parameters
+MAX_DIVISION_RATE: 1.0
+GROWTH_ACCELERATION: 0.1
+GROWTH_INFLECTION_TIME: 50
+
+# mtDNA parameters
+MTDNA_INITIAL_COUNT: 200
+MTDNA_MUTATION_RATE_PER_MITOSIS: 4
+
+# Sequencing read depth parameters
+MEAN_DP: 100
+DP_DISPERSION: 0.2
+BASE_ERROR_RATE: 0.001
+
+# Cell differentiation parameters
+DIFF_RATE: 0.1
+DIFF_INFLECTION_TIME: 50
+
+# Gene expression parameters
+NUM_GENES: 6000
+CELL_TYPE_SPECIFIC_FRAC: 0.4
+ALPHA: 0.1
+ZERO_INFLATION_PROB: 0.1
+
+# Simulation scale
+TOTAL_CELLS: 1000
+MAX_GENERATIONS: 100
