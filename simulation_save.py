@@ -120,10 +120,106 @@ def save_expression(expr_df, output_dir, filename="expression.csv"):
     expr_df.to_csv(expr_path, index=False)
     logging.info(f"Expression data saved to '{expr_path}'")
 
+def save_cell_metadata(cells, output_dir, filename="cell_metadata.csv"):
+    """
+    Save cell metadata including lineage information, generation, time, and cell type.
+    
+    Parameters
+    ----------
+    cells : list of Cell objects
+        List of cells with attributes to save.
+    output_dir : str
+        Main output directory.
+    filename : str
+        Name of the CSV file to save.
+    
+    Returns
+    -------
+    str
+        Path to the saved metadata file.
+    """
+    metadata_dir = os.path.join(output_dir, "metadata")
+    os.makedirs(metadata_dir, exist_ok=True)
+    
+    # Extract metadata from each cell
+    cell_metadata = []
+    for cell in cells:
+        metadata = {
+            'cell_id': cell.id,
+            'parent_id': cell.parent_id,
+            'generation': cell.generation,
+            'time': cell.time,
+            'cell_type': cell.cell_type,
+            'children': ','.join(cell.children) if cell.children else '',
+            'num_children': len(cell.children),
+            'num_mutations': len(cell.mutation_afs) if hasattr(cell, 'mutation_afs') else 0
+        }
+        cell_metadata.append(metadata)
+    
+    # print the number of cells in each cell type
+    cell_type_counts = {}
+    for cell in cells:
+        cell_type = cell.cell_type
+        if cell_type not in cell_type_counts:
+            cell_type_counts[cell_type] = 0
+        cell_type_counts[cell_type] += 1
+    print(f"Number of cells in each cell type: {cell_type_counts}")
+    
+    # Create DataFrame and save
+    metadata_df = pd.DataFrame(cell_metadata)
+    metadata_path = os.path.join(metadata_dir, filename)
+    metadata_df.to_csv(metadata_path, index=False)
+    
+    logging.info(f"Cell metadata saved to '{metadata_path}'")
+    return metadata_path
+
+def save_gene_metadata(gene_params, output_dir, filename="gene_metadata.csv"):
+    """
+    Save gene metadata including cell type specificity and expression parameters.
+    
+    Parameters
+    ----------
+    gene_params : dict
+        Dictionary of gene parameters from generate_gene_params().
+    output_dir : str
+        Main output directory.
+    filename : str
+        Name of the CSV file to save.
+    
+    Returns
+    -------
+    str
+        Path to the saved metadata file.
+    """
+    metadata_dir = os.path.join(output_dir, "metadata")
+    os.makedirs(metadata_dir, exist_ok=True)
+    
+    # Extract metadata for each gene
+    gene_metadata = []
+    for gene_id, params in gene_params.items():
+        metadata = {
+            'gene_id': gene_id,
+            'base_expression': params.get('base_expression', 0),
+            'expression_rate': params.get('expression_rate', 0),
+            'sigma': params.get('sigma', 0),
+            'cell_type_specific': params.get('cell_type_specific', False),
+            'specific_for': ','.join(params.get('specific_for', [])),
+            'inherited_by': ';'.join([f"{src}->{dst}" for src, dst in params.get('inherited_by', [])])
+        }
+        gene_metadata.append(metadata)
+    
+    # Create DataFrame and save
+    metadata_df = pd.DataFrame(gene_metadata)
+    metadata_path = os.path.join(metadata_dir, filename)
+    metadata_df.to_csv(metadata_path, index=False)
+    
+    logging.info(f"Gene metadata saved to '{metadata_path}'")
+    return metadata_path
+
 def visualize_mito_mutations(cells, mutations, output_file):
     """
     Visualize mitochondrial mutations as a heatmap.
-    (Unchanged except that you’ll pass an explicit output file path.)
+    (Unchanged except that you'll pass an explicit output file path.)
     """
     sorted_cells = sorted(cells, key=lambda c: c.id)
     cell_ids = [c.id for c in sorted_cells]
@@ -162,12 +258,171 @@ def visualize_gene_expression(cells, expr_df, output_prefix, color_by='cell_type
     pca_output = f"{output_prefix}_pca.png"
     umap_output = f"{output_prefix}_umap.png"
     
-    # (Same logic as before, omitted for brevity)
-    # ...
-    # Save final figures to pca_output and umap_output
-    # ...
+    # Convert cell IDs to strings in expr_df
+    expr_df.index = expr_df.index.astype(str)
     
-    # Return an AnnData object or None
+    # Filter out cells with zero total counts
+    cell_sums = expr_df.sum(axis=1)
+    expr_df = expr_df.loc[cell_sums > 0]
+    
+    # Filter out genes with zero expression across all cells
+    gene_sums = expr_df.sum(axis=0)
+    expr_df = expr_df.loc[:, gene_sums > 0]
+    
+    # If we have no data left after filtering, create a simple plot
+    if expr_df.shape[0] == 0 or expr_df.shape[1] == 0:
+        plt.figure(figsize=(8, 6))
+        plt.text(0.5, 0.5, "No expression data available after filtering", 
+                 ha='center', va='center', fontsize=14)
+        plt.title("Gene Expression Visualization")
+        plt.savefig(pca_output)  # Save as PCA output
+        plt.close()
+        print(f"Warning: No valid expression data. Empty plot saved to '{pca_output}'")
+        return None
+    
+    # Create AnnData object
+    adata = sc.AnnData(X=expr_df.values)
+    adata.obs_names = expr_df.index
+    adata.var_names = expr_df.columns
+    
+    # Add cell attributes to obs
+    cell_dict = {cell.id: cell for cell in cells}
+    
+    # Safely get cell attributes with fallbacks
+    def safe_get_cell_attr(cell_id, attr):
+        cell = cell_dict.get(cell_id)
+        if cell is None:
+            cell = cell_dict.get(cell_id.replace('cell_', ''))
+        if cell is None:
+            return 'Unknown' if attr == 'cell_type' else 0
+        return getattr(cell, attr)
+    
+    adata.obs['cell_type'] = [safe_get_cell_attr(cid, 'cell_type') for cid in adata.obs_names]
+    adata.obs['generation'] = [safe_get_cell_attr(cid, 'generation') for cid in adata.obs_names]
+    
+    # Preprocess the data
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+    
+    # Try to find highly variable genes, but handle errors gracefully
+    try:
+        # For small datasets or datasets with issues, use simpler criteria
+        if expr_df.shape[1] < 100 or expr_df.shape[0] < 10:
+            # Just use all genes instead of trying to find highly variable ones
+            adata.var['highly_variable'] = True
+        else:
+            # Use more robust parameters for highly variable gene selection
+            sc.pp.highly_variable_genes(
+                adata, 
+                min_mean=0.01,  # Lower threshold to include more genes
+                max_mean=10,    # Higher threshold to include more genes
+                min_disp=0.1,   # Lower dispersion threshold
+                n_top_genes=min(2000, adata.n_vars)  # Use top N genes or all genes if fewer
+            )
+    except Exception as e:
+        print(f"Warning: Error in highly variable gene selection: {e}")
+        # Just use all genes
+        adata.var['highly_variable'] = True
+    
+    # Filter to highly variable genes
+    adata = adata[:, adata.var.highly_variable]
+    
+    # Scale the data
+    try:
+        sc.pp.scale(adata, max_value=10)
+    except Exception as e:
+        print(f"Warning: Error in scaling: {e}")
+        # Continue without scaling if it fails
+    
+    # Run PCA with appropriate number of components
+    n_components = min(30, min(adata.n_obs - 1, adata.n_vars - 1))
+    
+    # Handle very small datasets
+    if n_components <= 1:
+        print("Warning: Dataset too small for PCA/UMAP, using raw data for visualization")
+        # Create a simple plot without dimensionality reduction
+        plt.figure(figsize=(8, 6))
+        
+        if color_by == 'cell_type':
+            for ct in adata.obs['cell_type'].unique():
+                mask = adata.obs['cell_type'] == ct
+                plt.scatter([0] * sum(mask), [0] * sum(mask), label=ct)
+            plt.legend()
+            plt.title("Cell Types (No dimensionality reduction - dataset too small)")
+        else:
+            plt.scatter([0] * adata.n_obs, [0] * adata.n_obs)
+            plt.title(f"Cells colored by {color_by} (No dimensionality reduction)")
+            
+        plt.savefig(pca_output)
+        plt.close()
+        return adata
+    
+    # Run PCA
+    try:
+        sc.tl.pca(adata, n_comps=n_components)
+        
+        # Plot and save PCA
+        sc.settings.figdir = os.path.dirname(pca_output)
+        sc.settings.set_figure_params(dpi=150, figsize=(8, 6))
+        
+        sc.pl.pca(adata, color=color_by, show=False, 
+                title=f"PCA of Gene Expression (colored by {color_by})")
+        plt.savefig(pca_output)
+        plt.close()
+        print(f"PCA visualization saved as '{pca_output}'")
+        
+    except Exception as e:
+        print(f"Warning: Error in PCA: {e}")
+        # Create a simple plot without PCA
+        plt.figure(figsize=(8, 6))
+        plt.text(0.5, 0.5, f"PCA failed: {str(e)}", ha='center', va='center')
+        plt.savefig(pca_output)
+        plt.close()
+        return adata
+    
+    # Compute neighbors before UMAP
+    try:
+        if adata.n_obs < 15:
+            # For small datasets, adjust neighbors parameters
+            n_neighbors = min(3, adata.n_obs-1)
+            sc.pp.neighbors(adata, n_neighbors=n_neighbors, use_rep='X_pca')
+        else:
+            # Default parameters for larger datasets
+            sc.pp.neighbors(adata, n_neighbors=15, use_rep='X_pca')
+        
+        # Run UMAP
+        sc.tl.umap(adata)
+        
+        # Plot UMAP
+        sc.pl.umap(adata, color=color_by, show=False, 
+                title=f"UMAP of Gene Expression (colored by {color_by})")
+        plt.savefig(umap_output)
+        plt.close()
+        print(f"UMAP visualization saved as '{umap_output}'")
+        
+    except Exception as e:
+        print(f"Warning: Error in UMAP: {e}")
+        # Fall back to PCA plot if UMAP fails
+        plt.figure(figsize=(8, 6))
+        
+        if hasattr(adata, 'obsm') and 'X_pca' in adata.obsm:
+            if color_by == 'cell_type':
+                for ct in adata.obs['cell_type'].unique():
+                    mask = adata.obs['cell_type'] == ct
+                    plt.scatter(adata.obsm['X_pca'][mask, 0], adata.obsm['X_pca'][mask, 1], label=ct)
+                plt.legend()
+            else:
+                plt.scatter(adata.obsm['X_pca'][:, 0], adata.obsm['X_pca'][:, 1])
+            
+            plt.title(f"PCA of Gene Expression (colored by {color_by})")
+            plt.xlabel("PC1")
+            plt.ylabel("PC2")
+        else:
+            plt.text(0.5, 0.5, f"Visualization failed: {str(e)}", ha='center', va='center')
+            
+        plt.savefig(umap_output)  # Save as UMAP output since UMAP failed
+        plt.close()
+    
     return None
 
 def visualize_simulation_results(cells, mutations, expr_df, output_dir, color_by='cell_type'):
@@ -344,4 +599,67 @@ def analyze_af_distribution(cells, mutations, output_dir):
             'baseline': baseline_cell_type_afs,
             'denovo': denovo_cell_type_afs
         }
+    }
+
+def save_simulation_data(cells, mutations, expr_df, gene_params, output_dir, prefix="simulation"):
+    """
+    Save all simulation data including expression, cell metadata, gene metadata, and mutation info.
+    
+    Parameters
+    ----------
+    cells : list of Cell objects
+        List of cells from the simulation
+    mutations : list of str
+        List of mutation IDs
+    expr_df : pd.DataFrame
+        Expression matrix (cells x genes)
+    gene_params : dict
+        Dictionary of gene parameters from generate_gene_params()
+    output_dir : str
+        Directory to save results
+    prefix : str
+        Prefix for output files
+    
+    Returns
+    -------
+    dict
+        Dictionary with paths to all saved files
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save expression data
+    expr_path = save_expression(expr_df, output_dir, f"{prefix}_expression.csv")
+    
+    # Save cell metadata
+    cell_meta_path = save_cell_metadata(cells, output_dir, f"{prefix}_cell_metadata.csv")
+    
+    # Save gene metadata
+    gene_meta_path = save_gene_metadata(gene_params, output_dir, f"{prefix}_gene_metadata.csv")
+    
+    # Save mutation data
+    mutation_info = pd.DataFrame({
+        'mutation_id': mutations,
+        'is_baseline': [mut.startswith('baseline_') for mut in mutations]
+    })
+    metadata_dir = os.path.join(output_dir, "metadata")
+    mutation_path = os.path.join(metadata_dir, f"{prefix}_mutation_info.csv")
+    mutation_info.to_csv(mutation_path, index=False)
+    
+    # Save DP/AD matrices
+    dp_ad_paths = export_mtx_for_dp_ad(cells, mutations, output_dir)
+    
+    # Create visualizations
+    visualize_simulation_results(cells, mutations, expr_df, output_dir)
+    
+    # Analyze AF distributions
+    af_analysis = analyze_af_distribution(cells, mutations, output_dir)
+    
+    logging.info(f"All simulation data saved to '{output_dir}'")
+    
+    return {
+        'expression': expr_path,
+        'cell_metadata': cell_meta_path,
+        'gene_metadata': gene_meta_path,
+        'mutation_info': mutation_path,
+        'dp_ad': dp_ad_paths
     }

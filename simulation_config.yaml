@@ -15,7 +15,7 @@ BASE_ERROR_RATE: 0.001
 
 # Cell differentiation parameters
 DIFF_RATE: 0.1
-DIFF_INFLECTION_TIME: 50
+DIFF_INFLECTION_TIME: 30
 
 # Gene expression parameters
 NUM_GENES: 6000
@@ -24,5 +24,5 @@ ALPHA: 0.1
 ZERO_INFLATION_PROB: 0.1
 
 # Simulation scale
-TOTAL_CELLS: 1000
+TOTAL_CELLS: 2000
 MAX_GENERATIONS: 100
