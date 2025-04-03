@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 import scanpy as sc
 import yaml  # Add this import for YAML support
 import json  # Add this import for JSON support
+from datetime import datetime
 
 from collections import deque
 from scipy.sparse import csc_matrix, csr_matrix
@@ -70,6 +71,7 @@ def load_config(config_path=None):
         # mtDNA parameters
         "MTDNA_INITIAL_COUNT": 200,
         "MTDNA_MUTATION_RATE_PER_MITOSIS": 4,   # Mutations per cell division
+        "SEGREGATION_BIAS": 0.5,
 
         # Sequencing read depth parameters
         "MEAN_DP": 100,            # Mean total read depth
@@ -78,11 +80,12 @@ def load_config(config_path=None):
 
         # Cell differentiation parameters
         "DIFF_RATE": 0.1,
-        "DIFF_INFLECTION_TIME": 50,
+        "DIFF_INFLECTION_TIME": 30,
+        "CELL_TYPE_FRAC": 0.5,
 
         # Gene expression parameters
         "NUM_GENES": 6000,
-        "CELL_TYPE_SPECIFIC_FRAC": 0.4,
+        "SPECIFIC_GENE_FRAC": 0.4,
         "ALPHA": 0.1,                # NB dispersion
         "ZERO_INFLATION_PROB": 0.1,  # Probability of zero inflation
 
@@ -127,25 +130,6 @@ def load_config(config_path=None):
 # Load configuration
 CONFIG = load_config()
 
-# Create global variables from config for easier access
-# This allows existing code to work without major changes
-MAX_DIVISION_RATE = CONFIG["MAX_DIVISION_RATE"]
-GROWTH_ACCELERATION = CONFIG["GROWTH_ACCELERATION"]
-GROWTH_INFLECTION_TIME = CONFIG["GROWTH_INFLECTION_TIME"]
-MTDNA_INITIAL_COUNT = CONFIG["MTDNA_INITIAL_COUNT"]
-MTDNA_MUTATION_RATE_PER_MITOSIS = CONFIG["MTDNA_MUTATION_RATE_PER_MITOSIS"]
-MEAN_DP = CONFIG["MEAN_DP"]
-DP_DISPERSION = CONFIG["DP_DISPERSION"]
-BASE_ERROR_RATE = CONFIG["BASE_ERROR_RATE"]
-DIFF_RATE = CONFIG["DIFF_RATE"]
-DIFF_INFLECTION_TIME = CONFIG["DIFF_INFLECTION_TIME"]
-NUM_GENES = CONFIG["NUM_GENES"]
-CELL_TYPE_SPECIFIC_FRAC = CONFIG["CELL_TYPE_SPECIFIC_FRAC"]
-ALPHA = CONFIG["ALPHA"]
-ZERO_INFLATION_PROB = CONFIG["ZERO_INFLATION_PROB"]
-TOTAL_CELLS = CONFIG["TOTAL_CELLS"]
-MAX_GENERATIONS = CONFIG["MAX_GENERATIONS"]
-
 # Set seeds for reproducibility
 np.random.seed(42)
 random.seed(42)
@@ -165,7 +149,7 @@ def initialize_baseline_mutations(num_baseline_mutations: int = 5) -> Dict[str, 
     Initialize a few baseline mutations with random allele frequencies in [0.001, 0.5].
     """
     baseline_mutations = {}
-    positions = np.random.randint(1, 16570, size=num_baseline_mutations)
+    positions = np.random.randint(1, 10000, size=num_baseline_mutations)
     for pos in positions:
         mut_id = f"baseline_m{pos}"
         # Uniform AF between 0.001 and 0.5
@@ -180,7 +164,7 @@ def introduce_new_mutations(mutation_rate: float) -> Dict[str, float]:
     new_mutations = {}
     
     if num_mutations > 0:
-        positions = np.random.randint(1, 16570, size=num_mutations)
+        positions = np.random.randint(10001, 15000, size=num_mutations)
         for pos in positions:
             new_mutations[f"m{pos}"] = np.random.uniform(0.0001, 0.01)  # Very small AFs
     return new_mutations
@@ -253,6 +237,147 @@ def differentiation_probability(
     Probability of a stem cell differentiating at time t (logistic-like).
     """
     return 1.0 - (1.0 / (1.0 + np.exp(-kappa_diff * (t - t0_diff))))
+
+def simulate_stem_cell_growth_and_differentiation(
+    total_cells: int,
+    mutation_rate: float,
+    num_baseline_mutations: int,
+    bias: float,
+    r: float,
+    kappa: float,
+    t0: float,
+    diff_kappa: float,
+    diff_t0: float
+) -> Tuple[List[Cell], List[str]]:
+    """
+    Simulate expansion of cells starting from a single stem cell, with
+    asymmetric division (one stem cell, one progenitor) and biased mtDNA segregation.
+
+    Parameters
+    ----------
+    total_cells : int
+        Target number of cells to simulate
+    mutation_rate : float
+        Rate of new mutations per cell division
+    num_baseline_mutations : int
+        Number of baseline mutations to initialize in the first cell
+    bias : float
+        Bias factor for mtDNA segregation (0.5 = symmetric)
+    r, kappa, t0 : float
+        Parameters for the division rate function
+    diff_kappa, diff_t0 : float
+        Parameters for the differentiation probability function
+
+    Returns
+    -------
+    cells : list
+        All cells in the final population.
+    all_mutations : list
+        Sorted list of all mutation IDs observed.
+    """
+    cells = []
+    stem_cell_queue = deque()
+    cid_counter = 0
+    current_time = 0.0
+
+    # Initialize the root cell
+    root_cell = Cell(
+        cid=cid_counter,
+        parent_id=None,
+        generation=0,
+        time_point=current_time,
+        mutation_afs=initialize_baseline_mutations(num_baseline_mutations),
+        cell_type='StemCell'
+    )
+    cells.append(root_cell)
+    stem_cell_queue.append(root_cell)
+    cid_counter += 1
+
+    while len(cells) < total_cells and stem_cell_queue:
+        parent_cell = stem_cell_queue.popleft()
+        
+        # Skip if not a stem cell (shouldn't happen, but just in case)
+        if parent_cell.cell_type != 'StemCell':
+            continue
+            
+        # Division rate
+        dr = division_rate(
+            t=parent_cell.time,
+            r=r,
+            kappa=kappa,
+            t0=t0
+        )
+        if dr <= 0:
+            continue
+
+        # Time to next division
+        wait_time = np.random.exponential(1.0 / dr)
+        new_time = parent_cell.time + wait_time
+
+        # Introduce new mutations
+        new_muts = introduce_new_mutations(mutation_rate)
+        combined_afs = {**parent_cell.mutation_afs, **new_muts}
+
+        # Segregate allele frequencies
+        d1_afs, d2_afs = segregate_allele_frequencies(combined_afs, bias=bias)
+
+        # Determine if this stem cell will produce a progenitor
+        diff_prob = differentiation_probability(parent_cell.time, diff_kappa, diff_t0)
+        will_differentiate = np.random.rand() < diff_prob
+        
+        # Create two daughters with asymmetric division
+        # First daughter: Always a stem cell
+        if len(cells) < total_cells:
+            stem_daughter = Cell(
+                cid=cid_counter,
+                parent_id=int(parent_cell.id.replace("cell_", "")),
+                generation=parent_cell.generation + 1,
+                time_point=new_time,
+                mutation_afs=d1_afs,
+                cell_type='StemCell'  # Always a stem cell
+            )
+            cells.append(stem_daughter)
+            parent_cell.children.append(stem_daughter.id)
+            stem_cell_queue.append(stem_daughter)  # Add to queue for future divisions
+            cid_counter += 1
+        
+        # Second daughter: Either a stem cell or a progenitor
+        if len(cells) < total_cells:
+            if will_differentiate:
+                # Randomly pick which progenitor type
+                prog_type = 'Progenitor1' if np.random.rand() < 0.5 else 'Progenitor2'
+                
+                prog_daughter = Cell(
+                    cid=cid_counter,
+                    parent_id=int(parent_cell.id.replace("cell_", "")),
+                    generation=parent_cell.generation + 1,
+                    time_point=new_time,
+                    mutation_afs=d2_afs,
+                    cell_type=prog_type
+                )
+                cells.append(prog_daughter)
+                parent_cell.children.append(prog_daughter.id)
+            else:
+                # Another stem cell
+                stem_daughter2 = Cell(
+                    cid=cid_counter,
+                    parent_id=int(parent_cell.id.replace("cell_", "")),
+                    generation=parent_cell.generation + 1,
+                    time_point=new_time,
+                    mutation_afs=d2_afs,
+                    cell_type='StemCell'
+                )
+                cells.append(stem_daughter2)
+                parent_cell.children.append(stem_daughter2.id)
+                stem_cell_queue.append(stem_daughter2)  # Add to queue for future divisions
+            
+            cid_counter += 1
+
+    # Gather all mutations
+    all_mutations = set()
+    for c in cells:
+        all_mutations.update(c.mutation_afs.keys())
+    return cells, sorted(all_mutations)
 
 def simulate_stem_cell_growth(
     total_cells: int,
@@ -342,21 +467,23 @@ def simulate_stem_cell_growth(
 def simulate_cell_differentiation(
     cells: List[Cell],
     diff_kappa: float,
-    diff_t0: float
+    diff_t0: float,
+    cell_type_frac: float = 0.5
 ) -> List[Cell]:
     """
     Convert some StemCells into Progenitor cells based on differentiation probability.
     Then handle one round of asymmetric division for those Progenitors.
     """
-    new_cells = []
-    
+    # Get the maximum generation
+    max_gen = max(c.generation for c in cells)
+
     for c in cells:
-        if c.cell_type == 'StemCell':
+        if c.cell_type == 'StemCell' and c.generation == max_gen:
             # Probability of differentiating
             diff_prob = differentiation_probability(c.time, diff_kappa, diff_t0)
             if np.random.rand() < diff_prob:
                 # Randomly pick which progenitor type
-                c.cell_type = 'Progenitor1' if np.random.rand() < 0.5 else 'Progenitor2'
+                c.cell_type = 'Progenitor1' if np.random.rand() < cell_type_frac else 'Progenitor2'
     
     return cells
 
@@ -408,7 +535,7 @@ def simulate_read_depth(
     mean_dp: float,
     dp_dispersion: float,
     base_error_rate: float,
-    false_mutation_rate: float = 0.001
+    false_mutation_rate: float = 0.0001
 ) -> None:
     """
     Simulate read depth for each mutation in a cell using a negative binomial model,
@@ -442,10 +569,10 @@ def simulate_read_depth(
         }
     
     # Simulate false mutations
-    num_false = np.random.poisson(false_mutation_rate * len(all_mutations))
+    num_false = np.random.poisson(false_mutation_rate * 16569)
     false_positions = set()
     while len(false_positions) < num_false:
-        pos = np.random.randint(1, 16570)
+        pos = np.random.randint(15001, 16570)
         false_positions.add(pos)
     
     for pos in false_positions:
@@ -517,14 +644,14 @@ def export_mtx_for_dp_ad(
 
 def generate_gene_params(
     num_genes: int,
-    cell_type_specific_frac: float
+    specific_gene_frac: float
 ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, set]]:
     """
     Example function to define which genes are cell-type-specific, etc.
     Adjust as needed for your own logic.
     """
     gene_ids = [f"Gene_{i}" for i in range(num_genes)]
-    num_specific = int(num_genes * cell_type_specific_frac)
+    num_specific = int(num_genes * specific_gene_frac)
     # Calculate genes per type (for stem and progenitor cells)
     genes_per_type = num_specific // 5  # Divide among all 5 cell types
     
@@ -649,7 +776,7 @@ def generate_latent_expression(
         # Calculate final expression level
         if modified_rate > 0:
             # Only apply generation effect to expressed genes
-            loc = base_expr + modified_rate * (1 + gen * 0.05)
+            loc = base_expr + modified_rate * (1 + gen * 0.005)
         else:
             # Base expression only for non-specific genes
             loc = base_expr
@@ -723,27 +850,42 @@ def run_basic_simulation(
     expr_df : pd.DataFrame of expression (cells x genes)
     """
     total_cells = config["TOTAL_CELLS"]
+    print(f"Total simulation cells: {total_cells}")
     mutation_rate = config["MTDNA_MUTATION_RATE_PER_MITOSIS"]
     num_baseline_mutations = 5
-    bias = 0.7
 
-    # 1. Growth
+    # 1. Differentiation while growth
+    cells, mutations = simulate_stem_cell_growth_and_differentiation(
+        total_cells=total_cells,
+        mutation_rate=mutation_rate,
+        num_baseline_mutations=num_baseline_mutations,
+        bias=config["SEGREGATION_BIAS"],
+        r=config["MAX_DIVISION_RATE"],
+        kappa=config["GROWTH_ACCELERATION"],
+        t0=config["GROWTH_INFLECTION_TIME"],
+        diff_kappa=config["DIFF_RATE"],
+        diff_t0=config["DIFF_INFLECTION_TIME"]
+    )
+    
+    '''
+    # 2. Growth then differentiation
     cells, mutations = simulate_stem_cell_growth(
         total_cells=total_cells,
         mutation_rate=mutation_rate,
         num_baseline_mutations=num_baseline_mutations,
-        bias=bias,
-        r=config["MAX_DIVISION_RATE"],
-        kappa=config["GROWTH_ACCELERATION"],
-        t0=config["GROWTH_INFLECTION_TIME"]
+        bias=config["SEGREGATION_BIAS"],
+        r = config["MAX_DIVISION_RATE"],
+        kappa = config["GROWTH_ACCELERATION"],
+        t0 = config["GROWTH_INFLECTION_TIME"]
     )
 
-    # 2. Differentiation
     cells = simulate_cell_differentiation(
-        cells,
+        cells=cells,
         diff_kappa=config["DIFF_RATE"],
-        diff_t0=config["DIFF_INFLECTION_TIME"]
+        diff_t0=config["DIFF_INFLECTION_TIME"],
+        cell_type_frac=config["CELL_TYPE_FRAC"]
     )
+    '''
 
     # 3. Sequencing read depth
     for cell in cells:
@@ -758,7 +900,7 @@ def run_basic_simulation(
     # 4. Gene expression
     gene_params, _ = generate_gene_params(
         num_genes=config["NUM_GENES"],
-        cell_type_specific_frac=config["CELL_TYPE_SPECIFIC_FRAC"]
+        specific_gene_frac=config["SPECIFIC_GENE_FRAC"]
     )
     expr_df = simulate_gene_expression_for_cells(
         cells,
@@ -767,7 +909,7 @@ def run_basic_simulation(
         zero_inflation_prob=config["ZERO_INFLATION_PROB"]
     )
 
-    return cells, mutations, expr_df
+    return cells, mutations, expr_df, gene_params
 
 if __name__ == "__main__":
     # Parse command line arguments to get config file path
@@ -779,45 +921,17 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Load configuration
-    CONFIG = load_config(args.config)
-    
-    # Update global variables from config
-    MAX_DIVISION_RATE = CONFIG["MAX_DIVISION_RATE"]
-    GROWTH_ACCELERATION = CONFIG["GROWTH_ACCELERATION"]
-    GROWTH_INFLECTION_TIME = CONFIG["GROWTH_INFLECTION_TIME"]
-    MTDNA_INITIAL_COUNT = CONFIG["MTDNA_INITIAL_COUNT"]
-    MTDNA_MUTATION_RATE_PER_MITOSIS = CONFIG["MTDNA_MUTATION_RATE_PER_MITOSIS"]
-    MEAN_DP = CONFIG["MEAN_DP"]
-    DP_DISPERSION = CONFIG["DP_DISPERSION"]
-    BASE_ERROR_RATE = CONFIG["BASE_ERROR_RATE"]
-    DIFF_RATE = CONFIG["DIFF_RATE"]
-    DIFF_INFLECTION_TIME = CONFIG["DIFF_INFLECTION_TIME"]
-    NUM_GENES = CONFIG["NUM_GENES"]
-    CELL_TYPE_SPECIFIC_FRAC = CONFIG["CELL_TYPE_SPECIFIC_FRAC"]
-    ALPHA = CONFIG["ALPHA"]
-    ZERO_INFLATION_PROB = CONFIG["ZERO_INFLATION_PROB"]
-    TOTAL_CELLS = CONFIG["TOTAL_CELLS"]
-    MAX_GENERATIONS = CONFIG["MAX_GENERATIONS"]
+    #CONFIG = load_config(args.config)
+    CONFIG = load_config("simulation_config.yaml")
     
     # 1) Run the simulation
     np.random.seed(123)
     random.seed(123)
-    cells, mutations, expr_df = run_basic_simulation()
+    cells, mutations, expr_df, gene_params = run_basic_simulation(config = CONFIG)
     
     # 2) Choose a single output directory
-    output_dir = "/Users/linxy29/Documents/Data/CIVET/simulation/simulation_results"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = f"/Users/linxy29/Documents/Data/CIVET/simulation/simulation_{timestamp}"
 
-    # 3) Save allele count data
-    export_mtx_for_dp_ad(cells, mutations, output_dir)
-
-    # 4) Save expression in "expression/expression.csv"
-    save_expression(expr_df, output_dir)
-
-    # 5) Visualize heatmap + PCA/UMAP in "figures/"
-    visualize_simulation_results(cells, mutations, expr_df, output_dir)
-
-    # 6) Analyze AF distribution in "af_analysis/"
-    af_analysis = analyze_af_distribution(cells, mutations, output_dir)
-
-    # Optionally inspect the returned summary
-    print(af_analysis)
+    # 3) Save the simulation results
+    save_simulation_data(cells, mutations, expr_df, gene_params, output_dir)

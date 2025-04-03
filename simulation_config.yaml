@@ -7,6 +7,7 @@ GROWTH_INFLECTION_TIME: 50
 # mtDNA parameters
 MTDNA_INITIAL_COUNT: 200
 MTDNA_MUTATION_RATE_PER_MITOSIS: 4
+SEGREGATION_BIAS: 0.5
 
 # Sequencing read depth parameters
 MEAN_DP: 100
@@ -16,6 +17,7 @@ BASE_ERROR_RATE: 0.001
 # Cell differentiation parameters
 DIFF_RATE: 0.1
 DIFF_INFLECTION_TIME: 30
+CELL_TYPE_FRAC: 0.5
 
 # Gene expression parameters
 NUM_GENES: 6000
