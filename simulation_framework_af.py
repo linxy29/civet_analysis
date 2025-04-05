@@ -534,12 +534,11 @@ def simulate_read_depth(
     all_mutations: List[str],
     mean_dp: float,
     dp_dispersion: float,
-    base_error_rate: float,
-    false_mutation_rate: float = 0.0001
+    base_error_rate: float
 ) -> None:
     """
     Simulate read depth for each mutation in a cell using a negative binomial model,
-    and then the allele depth using binomial sampling. Also add some false mutations.
+    and then the allele depth using binomial sampling.
     """
     r_param = 1.0 / dp_dispersion
     p_param = r_param / (r_param + mean_dp)
@@ -567,36 +566,38 @@ def simulate_read_depth(
             'AD': ad_sim,
             'is_true_mutation': True
         }
-    
-    # Simulate false mutations
+
+def get_dp_ad_matrices(
+    cells: List[Cell],
+    all_mutations: List[str],
+    mean_dp: float = 100,
+    dp_dispersion: float = 0.2,
+    false_mutation_rate: float = 0.0001,
+    false_mutation_cell_fraction: float = 0.3  # Fraction of cells that get false mutations
+) -> Dict[str, csc_matrix]:
+    """
+    Collect DP and AD data from all cells and return them as CSC matrices.
+    Also adds false mutations to a subset of cells.
+    Rows = cells, Columns = mutations.
+    """
+    num_cells = len(cells)
+    num_muts = len(all_mutations)
+
+    # Generate false mutation positions
     num_false = np.random.poisson(false_mutation_rate * 16569)
     false_positions = set()
     while len(false_positions) < num_false:
         pos = np.random.randint(15001, 16570)
         false_positions.add(pos)
     
-    for pos in false_positions:
-        mut_id = f"false_m{pos}"
-        dp_sim = max(1, int(np.random.negative_binomial(r_param, p_param) + mean_dp))
-        false_af = np.random.beta(1, 20)  # Typically quite low
-        ad_sim = np.random.binomial(dp_sim, false_af)
-        
-        cell.mutation_profile[mut_id] = {
-            'DP': dp_sim,
-            'AD': ad_sim,
-            'is_true_mutation': False
-        }
-
-def get_dp_ad_matrices(
-    cells: List[Cell],
-    all_mutations: List[str]
-) -> Dict[str, csc_matrix]:
-    """
-    Collect DP and AD data from all cells and return them as CSC matrices.
-    Rows = cells, Columns = mutations.
-    """
-    num_cells = len(cells)
-    num_muts = len(all_mutations)
+    # Create false mutation IDs
+    false_mutations = [f"false_m{pos}" for pos in false_positions]
+    print(f"Number of false mutations: {len(false_mutations)}")
+    all_mutations_with_false = all_mutations + false_mutations
+    
+    # Parameters for read depth simulation
+    r_param = 1.0 / dp_dispersion
+    p_param = r_param / (r_param + mean_dp)
 
     row_idx, col_idx = [], []
     dp_data, ad_data = [], []
@@ -604,6 +605,7 @@ def get_dp_ad_matrices(
     # Map cell.id -> row index
     cell_index_map = {c.id: i for i, c in enumerate(cells)}
 
+    # First add true mutations
     for c in cells:
         r_i = cell_index_map[c.id]
         for j, mut_id in enumerate(all_mutations):
@@ -616,27 +618,73 @@ def get_dp_ad_matrices(
                     dp_data.append(dp_val)
                     ad_data.append(ad_val)
     
-    dp_mat = csc_matrix((dp_data, (row_idx, col_idx)), shape=(num_cells, num_muts))
-    ad_mat = csc_matrix((ad_data, (row_idx, col_idx)), shape=(num_cells, num_muts))
-    return {'dp_matrix': dp_mat, 'ad_matrix': ad_mat}
+    # Now add false mutations to random subset of cells
+    num_cells_with_false = int(num_cells * false_mutation_cell_fraction)
+    cells_with_false = np.random.choice(num_cells, size=num_cells_with_false, replace=False)
+    
+    for false_idx, mut_id in enumerate(false_mutations):
+        j = len(all_mutations) + false_idx  # Column index after true mutations
+        
+        # Add this false mutation to selected cells
+        for cell_idx in cells_with_false:
+            dp_sim = max(1, int(np.random.negative_binomial(r_param, p_param) + mean_dp))
+            false_af = np.random.beta(1, 20)  # Typically quite low
+            ad_sim = np.random.binomial(dp_sim, false_af)
+            
+            row_idx.append(cell_idx)
+            col_idx.append(j)
+            dp_data.append(dp_sim)
+            ad_data.append(ad_sim)
+    
+    # Create matrices with expanded dimensions to include false mutations
+    total_muts = len(all_mutations_with_false)
+    dp_mat = csc_matrix((dp_data, (row_idx, col_idx)), shape=(num_cells, total_muts))
+    ad_mat = csc_matrix((ad_data, (row_idx, col_idx)), shape=(num_cells, total_muts))
+    
+    return {
+        'dp_matrix': dp_mat, 
+        'ad_matrix': ad_mat,
+        'all_mutations': all_mutations_with_false,
+        'false_mutations': false_mutations
+    }
 
 def export_mtx_for_dp_ad(
     cells: List[Cell],
     all_mutations: List[str],
-    prefix: str
+    prefix: str,
+    mean_dp: float = 100,
+    dp_dispersion: float = 0.2,
+    false_mutation_rate: float = 0.0001,
+    false_mutation_cell_fraction: float = 0.2
 ) -> Dict[str, csc_matrix]:
     """
     Write DP and AD matrices in Matrix Market format (.mtx) and return the matrices.
     """
-    mats = get_dp_ad_matrices(cells, all_mutations)
+    results = get_dp_ad_matrices(
+        cells, 
+        all_mutations,
+        mean_dp=mean_dp,
+        dp_dispersion=dp_dispersion,
+        false_mutation_rate=false_mutation_rate,
+        false_mutation_cell_fraction=false_mutation_cell_fraction
+    )
+    
     dp_outfile = f"{prefix}.DP.mtx"
     ad_outfile = f"{prefix}.AD.mtx"
+    mutations_outfile = f"{prefix}.mutations.txt"
     
-    mmwrite(dp_outfile, mats['dp_matrix'])
-    mmwrite(ad_outfile, mats['ad_matrix'])
+    mmwrite(dp_outfile, results['dp_matrix'])
+    mmwrite(ad_outfile, results['ad_matrix'])
+    
+    # Save mutation IDs including false mutations
+    with open(mutations_outfile, 'w') as f:
+        for mut_id in results['all_mutations']:
+            is_false = mut_id in results['false_mutations']
+            f.write(f"{mut_id}\t{is_false}\n")
     
     print(f"[export_mtx_for_dp_ad] DP -> {dp_outfile}, AD -> {ad_outfile}")
-    return mats
+    print(f"[export_mtx_for_dp_ad] Mutations -> {mutations_outfile}")
+    return results
 
 # ------------------------------------------------------------------------------
 # 6) Single-Cell Transcriptomics
@@ -833,6 +881,68 @@ def simulate_gene_expression_for_cells(
 # 8) High-Level Simulation Pipeline
 # ------------------------------------------------------------------------------
 
+def add_false_mutations(
+    cells: List[Cell],
+    false_mutation_rate: float = 0.0001,
+    false_mutation_cell_fraction: float = 0.3,
+    mean_dp: float = 100,
+    dp_dispersion: float = 0.2
+) -> List[str]:
+    """
+    Add false mutations to a subset of cells after simulate_read_depth.
+    
+    Parameters
+    ----------
+    cells : List[Cell]
+        List of cells with existing mutation profiles
+    false_mutation_rate : float
+        Rate of false mutations per base
+    false_mutation_cell_fraction : float
+        Fraction of cells that will receive false mutations
+    mean_dp : float
+        Mean depth for false mutations
+    dp_dispersion : float
+        Dispersion parameter for negative binomial distribution
+        
+    Returns
+    -------
+    List[str]
+        List of false mutation IDs that were added
+    """
+    # Generate false mutation positions
+    num_false = np.random.poisson(false_mutation_rate * 16569)
+    false_positions = set()
+    while len(false_positions) < num_false:
+        pos = np.random.randint(15001, 16570)
+        false_positions.add(pos)
+    
+    # Create false mutation IDs
+    false_mutations = [f"false_m{pos}" for pos in sorted(false_positions)]
+    print(f"Number of false mutations: {len(false_mutations)}")
+    
+    # Parameters for read depth simulation
+    r_param = 1.0 / dp_dispersion
+    p_param = r_param / (r_param + mean_dp)
+    
+    # Select random subset of cells to receive false mutations
+    num_cells_with_false = int(len(cells) * false_mutation_cell_fraction)
+    cells_with_false = np.random.choice(cells, size=num_cells_with_false, replace=False)
+    
+    # Add false mutations to selected cells
+    for cell in cells_with_false:
+        for mut_id in false_mutations:
+            dp_sim = max(1, int(np.random.negative_binomial(r_param, p_param) + mean_dp))
+            false_af = np.random.beta(1, 20)  # Typically quite low
+            ad_sim = np.random.binomial(dp_sim, false_af)
+            
+            cell.mutation_profile[mut_id] = {
+                'DP': dp_sim,
+                'AD': ad_sim,
+                'is_true_mutation': False
+            }
+    
+    return false_mutations
+
 def run_basic_simulation(
     config: dict = CONFIG
 ) -> Tuple[List[Cell], List[str], pd.DataFrame]:
@@ -840,13 +950,13 @@ def run_basic_simulation(
     Full simulation pipeline:
       1) Stem cell growth with optional bias
       2) Differentiation
-      3) Sequencing read depth
+      3) Sequencing read depth with false mutations
       4) Gene expression
 
     Returns
     -------
     cells : list of Cell
-    mutations : list of all mutation IDs
+    mutations : list of all mutation IDs (including false mutations)
     expr_df : pd.DataFrame of expression (cells x genes)
     """
     total_cells = config["TOTAL_CELLS"]
@@ -887,7 +997,7 @@ def run_basic_simulation(
     )
     '''
 
-    # 3. Sequencing read depth
+    # 3. Sequencing read depth for true mutations
     for cell in cells:
         simulate_read_depth(
             cell,
@@ -896,6 +1006,18 @@ def run_basic_simulation(
             dp_dispersion=config["DP_DISPERSION"],
             base_error_rate=config["BASE_ERROR_RATE"]
         )
+    
+    # 3. Add false mutations to a subset of cells
+    false_mutations = add_false_mutations(
+        cells,
+        false_mutation_rate=0.001,  # You can add these to config if desired
+        false_mutation_cell_fraction=0.3,
+        mean_dp=config["MEAN_DP"],
+        dp_dispersion=config["DP_DISPERSION"]
+    )
+    
+    # Combine true and false mutations
+    all_mutations = mutations + false_mutations
 
     # 4. Gene expression
     gene_params, _ = generate_gene_params(
@@ -909,7 +1031,7 @@ def run_basic_simulation(
         zero_inflation_prob=config["ZERO_INFLATION_PROB"]
     )
 
-    return cells, mutations, expr_df, gene_params
+    return cells, all_mutations, expr_df, gene_params
 
 if __name__ == "__main__":
     # Parse command line arguments to get config file path

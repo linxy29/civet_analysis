@@ -47,7 +47,6 @@ def export_mtx_for_dp_ad(cells, mutations, output_dir):
     dict
         Dictionary with file paths for the DP and AD matrices.
     """
-
     # Create subdirectory for cellSNP
     cellSNP_dir = os.path.join(output_dir, "cellSNP")
     os.makedirs(cellSNP_dir, exist_ok=True)
@@ -56,16 +55,20 @@ def export_mtx_for_dp_ad(cells, mutations, output_dir):
     sorted_cells = sorted(cells, key=lambda c: c.id)
     cell_ids = [c.id for c in sorted_cells]
 
-    # Build DP and AD matrices
-    DP_matrix = np.zeros((len(sorted_cells), len(mutations)), dtype=int)
-    AD_matrix = np.zeros((len(sorted_cells), len(mutations)), dtype=int)
+    # Build DP and AD matrices (mutations x cells)
+    DP_matrix = np.zeros((len(mutations), len(sorted_cells)), dtype=int)
+    AD_matrix = np.zeros((len(mutations), len(sorted_cells)), dtype=int)
 
-    for i, cell in enumerate(sorted_cells):
-        for j, mut in enumerate(mutations):
-            dp = cell.mutation_profile[mut]['DP']
-            ad = cell.mutation_profile[mut]['AD']
-            DP_matrix[i, j] = dp
-            AD_matrix[i, j] = ad
+    # Fill matrices with mutation data
+    for j, cell in enumerate(sorted_cells):
+        for i, mut in enumerate(mutations):
+            # Check if mutation exists in cell's profile
+            if mut in cell.mutation_profile:
+                dp = cell.mutation_profile[mut]['DP']
+                ad = cell.mutation_profile[mut]['AD']
+                DP_matrix[i, j] = dp
+                AD_matrix[i, j] = ad
+            # If mutation doesn't exist in profile, leave as 0 (already initialized)
 
     # Convert to sparse
     DP_sparse = scipy.sparse.csr_matrix(DP_matrix)
@@ -85,20 +88,30 @@ def export_mtx_for_dp_ad(cells, mutations, output_dir):
         for cid in cell_ids:
             f.write(f"{cid}\n")
 
-    # (Optional) Save a minimal VCF or mutation list if needed
-    # For demonstration, let's just store mutation IDs
+    # Save mutations list (now these are the row names)
+    mutations_path = os.path.join(cellSNP_dir, "cellSNP.tag.mutations.txt")
+    with open(mutations_path, 'w') as f:
+        for mut in mutations:
+            f.write(f"{mut}\n")
+
+    # Save a minimal VCF
     vcf_path = os.path.join(cellSNP_dir, "cellSNP.tag.vcf")
     with open(vcf_path, 'w') as f:
         f.write("##fileformat=VCFv4.2\n")
         f.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
         for mut in mutations:
             # For example, parse a mutation like "chrM:1234:A>G"
-            # Real logic depends on how your 'mutations' are stored
             f.write(f"chrM\t0\t{mut}\tN\tN\t.\t.\t.\n")
 
     logging.info(f"DP/AD matrices saved in '{cellSNP_dir}'")
 
-    return {"DP": dp_path, "AD": ad_path, "barcodes": barcodes_path, "vcf": vcf_path}
+    return {
+        "DP": dp_path, 
+        "AD": ad_path, 
+        "barcodes": barcodes_path, 
+        "mutations": mutations_path,
+        "vcf": vcf_path
+    }
 
 def save_expression(expr_df, output_dir, filename="expression.csv"):
     """
@@ -219,7 +232,6 @@ def save_gene_metadata(gene_params, output_dir, filename="gene_metadata.csv"):
 def visualize_mito_mutations(cells, mutations, output_file):
     """
     Visualize mitochondrial mutations as a heatmap.
-    (Unchanged except that you'll pass an explicit output file path.)
     """
     sorted_cells = sorted(cells, key=lambda c: c.id)
     cell_ids = [c.id for c in sorted_cells]
@@ -227,9 +239,14 @@ def visualize_mito_mutations(cells, mutations, output_file):
 
     for i, cell in enumerate(sorted_cells):
         for j, mut in enumerate(mutations):
-            dp = cell.mutation_profile[mut]['DP']
-            ad = cell.mutation_profile[mut]['AD']
-            af_matrix[i, j] = ad / dp if dp > 0 else 0.0
+            # Check if mutation exists in cell's profile
+            if mut in cell.mutation_profile:
+                dp = cell.mutation_profile[mut]['DP']
+                ad = cell.mutation_profile[mut]['AD']
+                af_matrix[i, j] = ad / dp if dp > 0 else 0.0
+            else:
+                # If mutation doesn't exist in profile, leave as 0
+                af_matrix[i, j] = 0.0
 
     af_df = pd.DataFrame(af_matrix, index=cell_ids, columns=mutations)
 
@@ -451,17 +468,6 @@ def visualize_simulation_results(cells, mutations, expr_df, output_dir, color_by
 def analyze_af_distribution(cells, mutations, output_dir):
     """
     Analyze the distribution of allele frequencies, saving plots & CSV under 'af_analysis/'.
-    
-    Parameters
-    ----------
-    cells : list of Cell objects
-    mutations : list of str
-    output_dir : str
-    
-    Returns
-    -------
-    dict
-        A summary dictionary (same as your original function).
     """
     af_dir = os.path.join(output_dir, "af_analysis")
     os.makedirs(af_dir, exist_ok=True)
@@ -476,107 +482,162 @@ def analyze_af_distribution(cells, mutations, output_dir):
         if cell_type not in cell_type_afs:
             cell_type_afs[cell_type] = []
         for mut in mutations:
-            dp = cell.mutation_profile[mut]['DP']
-            ad = cell.mutation_profile[mut]['AD']
-            if dp > 0:
-                af = ad / dp
-                all_afs.append(af)
-                cell_type_afs[cell_type].append(af)
-                mutation_afs[mut].append(af)
+            # Check if mutation exists in cell's profile
+            if mut in cell.mutation_profile:
+                dp = cell.mutation_profile[mut]['DP']
+                ad = cell.mutation_profile[mut]['AD']
+                if dp > 0:
+                    af = ad / dp
+                    all_afs.append(af)
+                    cell_type_afs[cell_type].append(af)
+                    mutation_afs[mut].append(af)
 
     baseline_mutations = [mut for mut in mutations if mut.startswith('baseline_')]
-    denovo_mutations = [mut for mut in mutations if not mut.startswith('baseline_')]
+    denovo_mutations = [mut for mut in mutations if not mut.startswith('baseline_') and not mut.startswith('false_m')]
+    false_mutations = [mut for mut in mutations if mut.startswith('false_m')]
 
     baseline_afs = []
     denovo_afs = []
+    false_afs = []
     baseline_cell_type_afs = {}
     denovo_cell_type_afs = {}
+    false_cell_type_afs = {}
 
     for cell in cells:
         cell_type = cell.cell_type
         if cell_type not in baseline_cell_type_afs:
             baseline_cell_type_afs[cell_type] = []
             denovo_cell_type_afs[cell_type] = []
+            false_cell_type_afs[cell_type] = []
+            
+        # Process baseline mutations
         for mut in baseline_mutations:
-            dp = cell.mutation_profile[mut]['DP']
-            ad = cell.mutation_profile[mut]['AD']
-            if dp > 0:
-                af = ad / dp
-                baseline_afs.append(af)
-                baseline_cell_type_afs[cell_type].append(af)
+            if mut in cell.mutation_profile:
+                dp = cell.mutation_profile[mut]['DP']
+                ad = cell.mutation_profile[mut]['AD']
+                if dp > 0:
+                    af = ad / dp
+                    baseline_afs.append(af)
+                    baseline_cell_type_afs[cell_type].append(af)
+        
+        # Process de novo mutations
         for mut in denovo_mutations:
-            dp = cell.mutation_profile[mut]['DP']
-            ad = cell.mutation_profile[mut]['AD']
-            if dp > 0:
-                af = ad / dp
-                denovo_afs.append(af)
-                denovo_cell_type_afs[cell_type].append(af)
+            if mut in cell.mutation_profile:
+                dp = cell.mutation_profile[mut]['DP']
+                ad = cell.mutation_profile[mut]['AD']
+                if dp > 0:
+                    af = ad / dp
+                    denovo_afs.append(af)
+                    denovo_cell_type_afs[cell_type].append(af)
+                    
+        # Process false mutations
+        for mut in false_mutations:
+            if mut in cell.mutation_profile:
+                dp = cell.mutation_profile[mut]['DP']
+                ad = cell.mutation_profile[mut]['AD']
+                if dp > 0:
+                    af = ad / dp
+                    false_afs.append(af)
+                    false_cell_type_afs[cell_type].append(af)
 
-    # 1) Baseline vs De Novo histogram
+    # Create plots
     plt.figure(figsize=(12, 6))
-    plt.hist(baseline_afs, bins=30, alpha=0.5, label='Baseline Mutations', color='blue')
-    plt.hist(denovo_afs, bins=30, alpha=0.5, label='De Novo Mutations', color='red')
-    plt.title('Distribution of Allele Frequencies: Baseline vs De Novo')
+    
+    # Plot histograms for all three types of mutations
+    if baseline_afs:
+        plt.hist(baseline_afs, bins=30, alpha=0.5, label='Baseline Mutations', color='blue')
+    if denovo_afs:
+        plt.hist(denovo_afs, bins=30, alpha=0.5, label='De Novo Mutations', color='red')
+    if false_afs:
+        plt.hist(false_afs, bins=30, alpha=0.5, label='False Mutations', color='green')
+    
+    plt.title('Distribution of Allele Frequencies by Mutation Type')
     plt.xlabel('Allele Frequency')
     plt.ylabel('Count')
     plt.legend()
     plt.grid(alpha=0.3)
 
-    stats_text = (
-        f"Baseline Mutations:\n"
-        f"Count: {len(baseline_afs)}\n"
-        f"Mean: {np.mean(baseline_afs):.4f}\n"
-        f"Median: {np.median(baseline_afs):.4f}\n"
-        f"Std Dev: {np.std(baseline_afs):.4f}\n\n"
-        f"De Novo Mutations:\n"
-        f"Count: {len(denovo_afs)}\n"
-        f"Mean: {np.mean(denovo_afs):.4f}\n"
-        f"Median: {np.median(denovo_afs):.4f}\n"
-        f"Std Dev: {np.std(denovo_afs):.4f}"
-    )
-    plt.text(0.95, 0.95, stats_text, transform=plt.gca().transAxes,
-             verticalalignment='top', horizontalalignment='right',
+    # Add statistics text
+    stats_text = []
+    if baseline_afs:
+        stats_text.append(
+            f"Baseline Mutations:\n"
+            f"Count: {len(baseline_afs)}\n"
+            f"Mean: {np.mean(baseline_afs):.4f}\n"
+            f"Median: {np.median(baseline_afs):.4f}\n"
+            f"Std Dev: {np.std(baseline_afs):.4f}\n"
+        )
+    if denovo_afs:
+        stats_text.append(
+            f"De Novo Mutations:\n"
+            f"Count: {len(denovo_afs)}\n"
+            f"Mean: {np.mean(denovo_afs):.4f}\n"
+            f"Median: {np.median(denovo_afs):.4f}\n"
+            f"Std Dev: {np.std(denovo_afs):.4f}\n"
+        )
+    if false_afs:
+        stats_text.append(
+            f"False Mutations:\n"
+            f"Count: {len(false_afs)}\n"
+            f"Mean: {np.mean(false_afs):.4f}\n"
+            f"Median: {np.median(false_afs):.4f}\n"
+            f"Std Dev: {np.std(false_afs):.4f}\n"
+        )
+    
+    plt.text(0.95, 0.95, "\n".join(stats_text), 
+             transform=plt.gca().transAxes,
+             verticalalignment='top', 
+             horizontalalignment='right',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     plt.tight_layout()
 
-    hist_path = os.path.join(af_dir, "af_baseline_vs_denovo_af.png")
+    hist_path = os.path.join(af_dir, "af_distribution.png")
     plt.savefig(hist_path, dpi=300)
     plt.close()
 
-    # 2) Boxplots by cell type
+    # Create and save boxplots
     plt.figure(figsize=(15, 6))
-    baseline_data = []
-    denovo_data = []
-
+    
+    # Prepare data for boxplots
+    boxplot_data = []
     for cell_type in baseline_cell_type_afs.keys():
         for af in baseline_cell_type_afs[cell_type]:
-            baseline_data.append({'Cell Type': cell_type, 'AF': af, 'Mutation Type': 'Baseline'})
+            boxplot_data.append({'Cell Type': cell_type, 'AF': af, 'Mutation Type': 'Baseline'})
         for af in denovo_cell_type_afs[cell_type]:
-            denovo_data.append({'Cell Type': cell_type, 'AF': af, 'Mutation Type': 'De Novo'})
+            boxplot_data.append({'Cell Type': cell_type, 'AF': af, 'Mutation Type': 'De Novo'})
+        for af in false_cell_type_afs[cell_type]:
+            boxplot_data.append({'Cell Type': cell_type, 'AF': af, 'Mutation Type': 'False'})
 
-    combined_df = pd.DataFrame(baseline_data + denovo_data)
-
-    plt.subplot(1, 2, 1)
-    sns.boxplot(data=combined_df[combined_df['Mutation Type'] == 'Baseline'],
-                x='Cell Type', y='AF')
-    plt.title('Baseline Mutations by Cell Type')
-    plt.xticks(rotation=45)
-
-    plt.subplot(1, 2, 2)
-    sns.boxplot(data=combined_df[combined_df['Mutation Type'] == 'De Novo'],
-                x='Cell Type', y='AF')
-    plt.title('De Novo Mutations by Cell Type')
-    plt.xticks(rotation=45)
+    combined_df = pd.DataFrame(boxplot_data)
     
-    plt.tight_layout()
+    if not combined_df.empty:
+        plt.subplot(1, 3, 1)
+        sns.boxplot(data=combined_df[combined_df['Mutation Type'] == 'Baseline'],
+                    x='Cell Type', y='AF')
+        plt.title('Baseline Mutations by Cell Type')
+        plt.xticks(rotation=45)
 
-    celltype_path = os.path.join(af_dir, "af_celltype_comparison.png")
-    plt.savefig(celltype_path, dpi=300)
-    plt.close()
+        plt.subplot(1, 3, 2)
+        sns.boxplot(data=combined_df[combined_df['Mutation Type'] == 'De Novo'],
+                    x='Cell Type', y='AF')
+        plt.title('De Novo Mutations by Cell Type')
+        plt.xticks(rotation=45)
 
-    # 3) Save combined data
-    csv_path = os.path.join(af_dir, "af_mutation_type_data.csv")
-    combined_df.to_csv(csv_path, index=False)
+        plt.subplot(1, 3, 3)
+        sns.boxplot(data=combined_df[combined_df['Mutation Type'] == 'False'],
+                    x='Cell Type', y='AF')
+        plt.title('False Mutations by Cell Type')
+        plt.xticks(rotation=45)
+        
+        plt.tight_layout()
+
+        celltype_path = os.path.join(af_dir, "af_celltype_comparison.png")
+        plt.savefig(celltype_path, dpi=300)
+        plt.close()
+
+        # Save data
+        csv_path = os.path.join(af_dir, "af_mutation_type_data.csv")
+        combined_df.to_csv(csv_path, index=False)
 
     logging.info(f"AF analysis saved in '{af_dir}'")
 
@@ -595,9 +656,12 @@ def analyze_af_distribution(cells, mutations, output_dir):
             'std': np.std(denovo_afs) if denovo_afs else 0,
             'count': len(denovo_afs)
         },
-        'cell_type_afs': {
-            'baseline': baseline_cell_type_afs,
-            'denovo': denovo_cell_type_afs
+        'false_summary': {
+            'afs': false_afs,
+            'mean': np.mean(false_afs) if false_afs else 0,
+            'median': np.median(false_afs) if false_afs else 0,
+            'std': np.std(false_afs) if false_afs else 0,
+            'count': len(false_afs)
         }
     }
 
