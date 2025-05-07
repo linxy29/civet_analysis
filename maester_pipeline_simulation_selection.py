@@ -271,7 +271,8 @@ def find_simulation_folders(base_dir="."):
 def main():
     """Main function to run the analysis"""
     # Base directory where SCENARIO* folders are located
-    base_dir = "/home/linxy29/data/CIVET/simulation"
+    # base_dir = "/home/linxy29/data/CIVET/simulation"
+    base_dir = "/Users/linxy29/Documents/Data/CIVET/simulation"
     
     # Find all simulation folders
     sim_folders = find_simulation_folders(base_dir)
@@ -397,7 +398,7 @@ def create_summary_report(all_results, base_dir):
         variant_counts.append(group['informative_variants'].values)
     
     # Create a boxplot
-    plt.boxplot(variant_counts, labels=scenario_names)
+    plt.boxplot(variant_counts, tick_labels=scenario_names)
     plt.title('Informative Variants by Scenario')
     plt.ylabel('Number of Informative Variants')
     plt.xlabel('Scenario')
@@ -426,7 +427,10 @@ def create_summary_report(all_results, base_dir):
     plt.close()
     
     # Create a stacked bar chart showing filter effects across scenarios
-    filter_summary = filter_df.groupby('scenario').mean().reset_index()
+    # Fix: Only include numeric columns when calculating mean
+    numeric_columns = ['initial_variants', 'after_coverage_filter', 'after_zero_vaf_filter', 
+                      'after_high_vaf_filter', 'after_all_filters', 'pct_retained']
+    filter_summary = filter_df.groupby('scenario')[numeric_columns].mean().reset_index()
     
     # Create a figure for filter statistics comparison
     plt.figure(figsize=(14, 8))
