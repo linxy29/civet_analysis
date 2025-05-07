@@ -36,10 +36,15 @@ from sklearn.decomposition import PCA
 from typing import Dict, List, Tuple, Optional
 
 # Import Cell class from simulation_classes module
-from simulation_classes import Cell
+from .simulation_classes import Cell
 
 # Import visualization and saving functions from simulation_save
-from simulation_save import *
+from .simulation_save import (
+    save_simulation_data,
+    export_mtx_for_dp_ad,
+    visualize_simulation_results,
+    analyze_af_distribution
+)
 
 # ------------------------------------------------------------------------------
 # 1) Global Configuration
