@@ -9,7 +9,11 @@ import json
 from datetime import datetime
 import argparse
 
-from simulation_framework_af import *
+from .simulation_framework_af import (
+    run_basic_simulation,
+    load_config
+)
+from .simulation_save import save_simulation_data
 
 #############################################
 # 1) Helper function to modify configuration

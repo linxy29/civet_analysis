@@ -135,7 +135,8 @@ def save_expression(expr_df, output_dir, filename="expression.csv"):
 
 def save_cell_metadata(cells, output_dir, filename="cell_metadata.csv"):
     """
-    Save cell metadata including lineage information, generation, time, and cell type.
+    Save cell metadata including lineage information, generation, time, cell type,
+    and mutation lists (baseline, de novo, and false mutations).
     
     Parameters
     ----------
@@ -157,6 +158,21 @@ def save_cell_metadata(cells, output_dir, filename="cell_metadata.csv"):
     # Extract metadata from each cell
     cell_metadata = []
     for cell in cells:
+        # Separate mutations by type (baseline, de novo, false)
+        baseline_mutations = []
+        denovo_mutations = []
+        false_mutations = []
+        
+        # Only count mutations with AD > 0
+        for mut_id, mut_data in cell.mutation_profile.items():
+            if mut_data['AD'] > 0:
+                if mut_id.startswith('baseline_'):
+                    baseline_mutations.append(mut_id)
+                elif mut_id.startswith('false_m'):
+                    false_mutations.append(mut_id)
+                else:
+                    denovo_mutations.append(mut_id)
+        
         metadata = {
             'cell_id': cell.id,
             'parent_id': cell.parent_id,
@@ -165,7 +181,13 @@ def save_cell_metadata(cells, output_dir, filename="cell_metadata.csv"):
             'cell_type': cell.cell_type,
             'children': ','.join(cell.children) if cell.children else '',
             'num_children': len(cell.children),
-            'num_mutations': len(cell.mutation_afs) if hasattr(cell, 'mutation_afs') else 0
+            'num_mutations': len(baseline_mutations) + len(denovo_mutations) + len(false_mutations),
+            'num_baseline_mutations': len(baseline_mutations),
+            'num_denovo_mutations': len(denovo_mutations),
+            'num_false_mutations': len(false_mutations),
+            'baseline_mutations': ','.join(baseline_mutations) if baseline_mutations else '',
+            'denovo_mutations': ','.join(denovo_mutations) if denovo_mutations else '',
+            'false_mutations': ','.join(false_mutations) if false_mutations else ''
         }
         cell_metadata.append(metadata)
     
@@ -700,11 +722,31 @@ def save_simulation_data(cells, mutations, expr_df, gene_params, output_dir, pre
     # Save gene metadata
     gene_meta_path = save_gene_metadata(gene_params, output_dir, f"{prefix}_gene_metadata.csv")
     
-    # Save mutation data
+    # Save mutation data with explicit categorization
     mutation_info = pd.DataFrame({
         'mutation_id': mutations,
-        'is_baseline': [mut.startswith('baseline_') for mut in mutations]
+        'is_baseline': [mut.startswith('baseline_') for mut in mutations],
+        'is_denovo': [not mut.startswith('baseline_') and not mut.startswith('false_m') for mut in mutations],
+        'is_false': [mut.startswith('false_m') for mut in mutations],
+        'mutation_type': [
+            'Baseline' if mut.startswith('baseline_') else 
+            'False' if mut.startswith('false_m') else 
+            'De Novo' for mut in mutations
+        ]
     })
+    
+    # Count the number of cells containing each mutation
+    mutation_cell_counts = {'mutation_id': [], 'cells_with_mutation': []}
+    
+    for mut in mutations:
+        count = sum(1 for cell in cells if mut in cell.mutation_profile and cell.mutation_profile[mut]['AD'] > 0)
+        mutation_cell_counts['mutation_id'].append(mut)
+        mutation_cell_counts['cells_with_mutation'].append(count)
+    
+    # Add cell counts to mutation info
+    mutation_counts_df = pd.DataFrame(mutation_cell_counts)
+    mutation_info = pd.merge(mutation_info, mutation_counts_df, on='mutation_id')
+    
     metadata_dir = os.path.join(output_dir, "metadata")
     mutation_path = os.path.join(metadata_dir, f"{prefix}_mutation_info.csv")
     mutation_info.to_csv(mutation_path, index=False)
