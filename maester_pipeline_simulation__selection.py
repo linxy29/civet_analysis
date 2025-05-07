@@ -271,7 +271,7 @@ def find_simulation_folders(base_dir="."):
 def main():
     """Main function to run the analysis"""
     # Base directory where SCENARIO* folders are located
-    base_dir = "/Users/linxy29/Documents/Data/CIVET/simulation"
+    base_dir = "/home/linxy29/data/CIVET/simulation"
     
     # Find all simulation folders
     sim_folders = find_simulation_folders(base_dir)

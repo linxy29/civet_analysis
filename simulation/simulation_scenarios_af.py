@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# usage: python -m simulation.simulation_scenarios_af --scenario all
 
 import os
 import random
@@ -60,7 +61,7 @@ def scenario_1_mutation_rate(config, rates=[1, 2, 4, 8, 16]):
         
         # Create an output subdirectory for each mutation rate
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_subdir = f"/Users/linxy29/Documents/Data/CIVET/simulation/{scenario_name}/mutation_rate_{r}_{timestamp}"
+        output_subdir = f"/home/linxy29/data/CIVET/simulation/{scenario_name}/mutation_rate_{r}_{timestamp}"
         
         # Run and save
         run_sim_and_save(sim_config, scenario_name, output_subdir)
@@ -92,7 +93,7 @@ def scenario_2_segregation_models(config, biases=[0.5, 0.7, 0.9]):
         
         # Create an output subdirectory for each bias value
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_subdir = f"/Users/linxy29/Documents/Data/CIVET/simulation/{scenario_name}/bias_{b}_{timestamp}"
+        output_subdir = f"/home/linxy29/data/CIVET/simulation/{scenario_name}/bias_{b}_{timestamp}"
         
         # Run and save
         run_sim_and_save(sim_config, scenario_name, output_subdir)
@@ -125,7 +126,7 @@ def scenario_3_differentiation(config, fractions=[0.2, 0.4, 0.8]):
         
         # Create an output subdirectory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_subdir = f"/Users/linxy29/Documents/Data/CIVET/simulation/{scenario_name}/cell_type_frac_{frac}_{timestamp}"
+        output_subdir = f"/home/linxy29/data/CIVET/simulation/{scenario_name}/cell_type_frac_{frac}_{timestamp}"
         
         # Run and save
         run_sim_and_save(sim_config, scenario_name, output_subdir)

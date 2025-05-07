@@ -24,8 +24,8 @@ read_mtx_safe <- function(mtx, mutations, barcodes, feature.column = 1) {
   # For demonstration, let's assume no separate 'features' file is needed.
   mat <- ReadMtx(
     mtx = mtx,
-    features = barcodes,     # or your variants file if needed
-    cells = mutations,
+    features = mutations,     # or your variants file if needed
+    cells = barcodes,
     feature.column = feature.column
   )
   return(mat)
@@ -157,3 +157,4 @@ if (interactive()) {
   # If running as a script via Rscript, call main
   main()
 }
+
