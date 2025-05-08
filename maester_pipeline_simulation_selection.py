@@ -4,7 +4,7 @@
 # - VAF of 0% in at least 50% of cells
 # - VAF >50% in at least 10 cells
 
-# Usage: python maester_pipeline_simulation_selection.py --base-dir /Users/linxy29/Documents/Data/CIVET/simulation --disable-zero-vaf-filter
+# Usage: python maester_pipeline_simulation_selection.py --base-dir /Users/linxy29/Documents/Data/CIVET/simulation c
 
 import os
 import numpy as np
