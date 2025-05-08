@@ -5,14 +5,15 @@ import scipy.io as sio
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.sparse import csr_matrix
+import re
 
 def process_simulation_data(sim_dir):
     """
     Process simulation data to filter variants and cells based on clonal hematopoiesis criteria:
     - Mean coverage >5 per cell
     - Mean quality >30 (Note: quality data not available in this simulation, will be skipped)
-    - VAF of 0% in at least 90% of cells
-    - VAF >50% in at least 10 cells
+    - VAF of 0% in at least 50% of cells
+    - VAF >50% in at least 10 cells 
     
     Args:
         sim_dir: Path to the simulation directory
@@ -21,6 +22,14 @@ def process_simulation_data(sim_dir):
         Dictionary containing filtered variants and cells
     """
     print(f"Processing simulation data from: {sim_dir}")
+    
+    # Extract scenario and condition information
+    scenario_match = re.search(r'(SCENARIO\d+)', sim_dir)
+    scenario = scenario_match.group(1) if scenario_match else "unknown"
+    
+    # Get the parameter/condition (last part of the path)
+    parts = sim_dir.split(os.sep)
+    condition = parts[-1] if parts else "unknown"
     
     # Load cell barcodes
     barcodes_file = os.path.join(sim_dir, 'cellSNP', 'cellSNP.tag.barcodes.txt')
@@ -83,7 +92,7 @@ def process_simulation_data(sim_dir):
         zero_vaf_count = np.sum(variant_vaf == 0)
         cells_with_zero_vaf.append(zero_vaf_count / n_cells * 100)  # Percentage
         
-        # Count cells with VAF > 0.5 (50%)
+        # Count cells with VAF > 0.50 (50%)
         high_vaf_count = np.sum(variant_vaf > 0.5)
         cells_with_high_vaf.append(high_vaf_count)
     
@@ -93,9 +102,9 @@ def process_simulation_data(sim_dir):
     filter_stats['after_filters']['coverage_filter'] = len(coverage_filter_passed)
     print(f"Variants after coverage filter (>5): {len(coverage_filter_passed)}")
     
-    zero_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_zero_vaf[i] >= 90]
+    zero_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_zero_vaf[i] >= 0.5*n_cells]
     filter_stats['after_filters']['zero_vaf_filter'] = len(zero_vaf_filter_passed)
-    print(f"Variants after zero VAF filter (≥90% cells): {len(zero_vaf_filter_passed)}")
+    print(f"Variants after zero VAF filter (≥50% cells): {len(zero_vaf_filter_passed)}")
     
     high_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_high_vaf[i] >= 10]
     filter_stats['after_filters']['high_vaf_filter'] = len(high_vaf_filter_passed)
@@ -106,10 +115,10 @@ def process_simulation_data(sim_dir):
     for i in range(len(mutations)):
         # Filter criteria:
         # 1. Mean coverage > 5
-        # 2. VAF = 0% in at least 90% of cells
-        # 3. VAF > 50% in at least 10 cells
+        # 2. VAF = 0% in at least 50% of cells
+        # 3. VAF > 50% in at least 10 cells 
         if (mean_coverage[i] > 5 and 
-            cells_with_zero_vaf[i] >= 90 and 
+            cells_with_zero_vaf[i] >= 0.5*n_cells and 
             cells_with_high_vaf[i] >= 10):
             informative_variants.append(i)
     
@@ -118,6 +127,8 @@ def process_simulation_data(sim_dir):
     
     # Select cells with VAF > 1% for any informative variant
     selected_cells = set()
+    detected_mutations_by_cell = {}
+    
     for variant_idx in informative_variants:
         # Get VAF for this variant across all cells
         variant_vaf = vaf_matrix[variant_idx].toarray().flatten()
@@ -125,11 +136,55 @@ def process_simulation_data(sim_dir):
         # Find cells with VAF > 1%
         positive_cells = np.where(variant_vaf > 0.01)[0]
         selected_cells.update(positive_cells)
+        
+        # Track which cells have which mutations detected
+        mutation_name = mutations[variant_idx]
+        for cell_idx in positive_cells:
+            if cell_idx not in detected_mutations_by_cell:
+                detected_mutations_by_cell[cell_idx] = []
+            detected_mutations_by_cell[cell_idx].append(mutation_name)
     
     selected_cells = sorted(list(selected_cells))
     print(f"Selected {len(selected_cells)} cells with VAF > 1% for any informative variant")
     
-    # Create a result dictionary
+    # Identify mutation types based on mutation name
+    baseline_mutations = []
+    false_mutations = []
+    rest_mutations = []
+    
+    for mutation in mutations:
+        if "baseline" in mutation.lower():
+            baseline_mutations.append(mutation)
+        elif "false" in mutation.lower():
+            false_mutations.append(mutation)
+        else:
+            rest_mutations.append(mutation)
+    
+    # Create a result dictionary with additional mutation categorization
+    mutation_data = []
+    
+    for i, mutation in enumerate(mutations):
+        is_detected = i in informative_variants
+        is_baseline = mutation in baseline_mutations
+        is_false = mutation in false_mutations
+        is_rest = mutation in rest_mutations
+        
+        mutation_data.append({
+            'scenario': scenario,
+            'condition': condition,
+            'mutation_name': mutation,
+            'detected': is_detected,
+            'baseline_mutation': is_baseline,
+            'false_mutation': is_false,
+            'rest_mutation': is_rest,
+            'mean_coverage': mean_coverage[i],
+            'pct_cells_with_zero_vaf': cells_with_zero_vaf[i],
+            'cells_with_high_vaf': cells_with_high_vaf[i]
+        })
+    
+    # Create DataFrame for mutation data
+    mutation_df = pd.DataFrame(mutation_data)
+    
     result = {
         'informative_variants': [mutations[i] for i in informative_variants],
         'selected_cells': [cell_barcodes[i] for i in selected_cells],
@@ -140,8 +195,17 @@ def process_simulation_data(sim_dir):
             'cells_with_high_vaf': cells_with_high_vaf,
             'is_informative': [i in informative_variants for i in range(len(mutations))]
         }),
-        'filter_stats': filter_stats
+        'filter_stats': filter_stats,
+        'mutation_data': mutation_df,
+        'detected_mutations_by_cell': detected_mutations_by_cell
     }
+    
+    # Create output directory for results if it doesn't exist
+    output_dir = os.path.join(sim_dir, 'maesterpp_selection_results')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save the mutation data
+    mutation_df.to_csv(os.path.join(output_dir, 'mutation_data.csv'), index=False)
     
     # Create visualization of selected variants
     create_variant_visualization(result, sim_dir, vaf_matrix, informative_variants, selected_cells)
@@ -153,7 +217,7 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
     Create visualizations to show the selected variants and cells
     """
     # Create output directory for results if it doesn't exist
-    output_dir = os.path.join(sim_dir, 'variant_selection_results')
+    output_dir = os.path.join(sim_dir, 'maesterpp_selection_results')
     os.makedirs(output_dir, exist_ok=True)
     
     # Save the variant metrics
@@ -163,7 +227,7 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
     filter_stats_df = pd.DataFrame([
         {"filter_name": "Initial", "variants_remaining": result['filter_stats']['initial_variants']},
         {"filter_name": "Coverage > 5", "variants_remaining": result['filter_stats']['after_filters']['coverage_filter']},
-        {"filter_name": "VAF = 0 in ≥90% cells", "variants_remaining": result['filter_stats']['after_filters']['zero_vaf_filter']},
+        {"filter_name": "VAF = 0 in ≥50% cells", "variants_remaining": result['filter_stats']['after_filters']['zero_vaf_filter']},
         {"filter_name": "VAF > 50% in ≥10 cells", "variants_remaining": result['filter_stats']['after_filters']['high_vaf_filter']},
         {"filter_name": "All filters", "variants_remaining": result['filter_stats']['after_filters']['all_filters']}
     ])
@@ -214,7 +278,7 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
         
         plt.subplot(2, 2, 2)
         sns.histplot(result['variant_metrics']['pct_cells_with_zero_vaf'], bins=30)
-        plt.axvline(x=90, color='r', linestyle='--', label='Threshold (90%)')
+        plt.axvline(x=90, color='r', linestyle='--', label='Threshold (50%)')
         plt.title('Distribution of % Cells with Zero VAF')
         plt.xlabel('% Cells with VAF = 0')
         plt.legend()
@@ -223,7 +287,7 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
         sns.histplot(result['variant_metrics']['cells_with_high_vaf'], bins=30)
         plt.axvline(x=10, color='r', linestyle='--', label='Threshold (10)')
         plt.title('Distribution of Cells with High VAF')
-        plt.xlabel('Number of Cells with VAF > 50%')
+        plt.xlabel('Number of Cells with VAF > 50%')  
         plt.legend()
         
         plt.tight_layout()
@@ -271,8 +335,8 @@ def find_simulation_folders(base_dir="."):
 def main():
     """Main function to run the analysis"""
     # Base directory where SCENARIO* folders are located
-    # base_dir = "/home/linxy29/data/CIVET/simulation"
-    base_dir = "/Users/linxy29/Documents/Data/CIVET/simulation"
+    base_dir = "/home/linxy29/data/CIVET/simulation"
+    #base_dir = "/Users/linxy29/Documents/Data/CIVET/simulation"
     
     # Find all simulation folders
     sim_folders = find_simulation_folders(base_dir)
@@ -287,6 +351,8 @@ def main():
     
     # Process each simulation folder
     all_results = {}
+    all_mutation_data = []
+    
     for sim_dir in sim_folders:
         print(f"\nProcessing {sim_dir}...")
         
@@ -294,6 +360,9 @@ def main():
         try:
             result = process_simulation_data(sim_dir)
             all_results[sim_dir] = result
+            
+            # Collect mutation data for combined output
+            all_mutation_data.append(result['mutation_data'])
             
             # Print summary statistics
             print(f"\nSummary for {sim_dir}:")
@@ -305,7 +374,7 @@ def main():
             print(f"  Initial variants: {filter_stats['initial_variants']}")
             print(f"  After coverage filter (>5): {filter_stats['after_filters']['coverage_filter']} " + 
                   f"({round(filter_stats['after_filters']['coverage_filter']/filter_stats['initial_variants']*100, 1)}% retained)")
-            print(f"  After zero VAF filter (≥90% cells): {filter_stats['after_filters']['zero_vaf_filter']} " + 
+            print(f"  After zero VAF filter (≥50% cells): {filter_stats['after_filters']['zero_vaf_filter']} " + 
                   f"({round(filter_stats['after_filters']['zero_vaf_filter']/filter_stats['initial_variants']*100, 1)}% retained)")
             print(f"  After high VAF filter (≥10 cells): {filter_stats['after_filters']['high_vaf_filter']} " + 
                   f"({round(filter_stats['after_filters']['high_vaf_filter']/filter_stats['initial_variants']*100, 1)}% retained)")
@@ -322,9 +391,18 @@ def main():
             if len(result['informative_variants']) > 5:
                 print(f"  ... and {len(result['informative_variants'])-5} more")
                 
-            print(f"Results saved to {os.path.join(sim_dir, 'variant_selection_results')}")
+            print(f"Results saved to {os.path.join(sim_dir, 'maesterpp_selection_results')}")
         except Exception as e:
             print(f"Error processing {sim_dir}: {str(e)}")
+    
+    # Combine all mutation data into a single DataFrame
+    if all_mutation_data:
+        combined_mutation_df = pd.concat(all_mutation_data, ignore_index=True)
+        
+        # Save combined mutation data
+        combined_output_path = os.path.join(base_dir, 'maesterpp_mutation_combine.csv')
+        combined_mutation_df.to_csv(combined_output_path, index=False)
+        print(f"\nCombined mutation data saved to {combined_output_path}")
     
     # Create a summary of all results
     create_summary_report(all_results, base_dir)
@@ -342,7 +420,7 @@ def create_summary_report(all_results, base_dir):
         return
     
     # Create a summary directory
-    summary_dir = os.path.join(base_dir, "variant_selection_summary")
+    summary_dir = os.path.join(base_dir, "maesterpp_selection_summary")
     os.makedirs(summary_dir, exist_ok=True)
     
     # Create a summary CSV file

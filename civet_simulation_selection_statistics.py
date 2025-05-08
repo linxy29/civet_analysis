@@ -2,131 +2,128 @@
 
 import os
 import pandas as pd
-import re
 import glob
+import re
 
-# Define thresholds for detection
-thresholds = [0.01, 0.05, 1.0]
-
-# Function to classify mutation types based on their names
-def classify_mutation(variant_name):
-    if variant_name.startswith("baseline_"):
-        return "baseline"
-    elif variant_name.startswith("false_"):
-        return "false"
-    else:
-        return "other"
-
-# Function to analyze a single civet_results.csv file
-def analyze_civet_file(file_path, scenario_name, condition_name):
-    try:
-        # Read the CSV file
-        df = pd.read_csv(file_path)
+def process_civet_results(root_dir):
+    """
+    Process civet_results.csv files and generate civet_mutation_combine files
+    
+    Args:
+        root_dir: Root directory containing scenario folders
+    """
+    # Dictionary to store results by value type and threshold
+    results_by_type_threshold = {}
+    thresholds = [0.01, 0.05, 1]
+    
+    # Find all civet_results.csv files
+    for civet_file in glob.glob(os.path.join(root_dir, "**/civet_res/civet_results.csv"), recursive=True):
+        print(f"Processing {civet_file}")
         
-        # Remove rows where value column equals "LR_vals"
-        lr_vals_df = df[df['value'] == "LR_vals"]
-        df = df[df['value'] != "LR_vals"]
+        # Get scenario information from directory path
+        scenario_path = os.path.dirname(os.path.dirname(civet_file))
+        scenario_name = os.path.basename(scenario_path)
+        condition_name = os.path.basename(os.path.dirname(scenario_path))
         
-        # Convert generation column to numeric for comparison
-        df['generation'] = pd.to_numeric(df['generation'], errors='coerce')
+        # Read civet_results.csv
+        try:
+            civet_df = pd.read_csv(civet_file)
+        except Exception as e:
+            print(f"Error reading {civet_file}: {e}")
+            continue
         
-        # Add mutation type classification
-        df['mutation_type'] = df['variant'].apply(classify_mutation)
+        # Filter out rows where value = 'LR_vals'
+        filtered_df = civet_df[civet_df['value'] != 'LR_vals']
         
-        # Create results dictionary to store statistics
-        results = {
-            'scenario': scenario_name,
-            'condition': condition_name,
-            'total_mutations': len(df),
-            'total_baseline': len(df[df['mutation_type'] == 'baseline']),
-            'total_false': len(df[df['mutation_type'] == 'false']),
-            'total_other': len(df[df['mutation_type'] == 'other'])
-        }
+        # Get remaining value types after filtering
+        remaining_value_types = filtered_df['value'].unique()
         
-        # Calculate statistics for each threshold
-        for threshold in thresholds:
-            detected = df[df['generation'] < threshold]
-            non_detected = df[df['generation'] >= threshold]
+        # Get all mutations from the variant column
+        all_mutations = civet_df['variant'].unique()
+        
+        # Read mutation info file to identify baseline and false mutations
+        mutation_info_file = os.path.join(scenario_path, "metadata/simulation_mutation_info.csv")
+        
+        baseline_mutations = []
+        false_mutations = []
+        rest_mutations = []
+        
+        if os.path.exists(mutation_info_file):
+            try:
+                mutation_info_df = pd.read_csv(mutation_info_file)
+                baseline_mutations = mutation_info_df[mutation_info_df['mutation_type'] == 'baseline']['mutation_name'].tolist()
+                false_mutations = mutation_info_df[mutation_info_df['mutation_type'] == 'false']['mutation_name'].tolist()
+                # Rest mutations are those that are neither baseline nor false
+                rest_mutations = [m for m in mutation_info_df['mutation_name'].tolist() 
+                                 if m not in baseline_mutations and m not in false_mutations]
+            except Exception as e:
+                print(f"Error reading mutation info file {mutation_info_file}: {e}")
+        
+        # Process each value type with thresholds
+        for value_type in remaining_value_types:
+            value_type_df = filtered_df[filtered_df['value'] == value_type]
             
-            detected_baseline = len(detected[detected['mutation_type'] == 'baseline'])
-            detected_false = len(detected[detected['mutation_type'] == 'false'])
-            detected_other = len(detected[detected['mutation_type'] == 'other'])
-            
-            non_detected_baseline = len(non_detected[non_detected['mutation_type'] == 'baseline'])
-            non_detected_false = len(non_detected[non_detected['mutation_type'] == 'false'])
-            non_detected_other = len(non_detected[non_detected['mutation_type'] == 'other'])
-            
-            # Add to results dictionary
-            results[f'detected_total_{threshold}'] = len(detected)
-            results[f'detected_baseline_{threshold}'] = detected_baseline
-            results[f'detected_false_{threshold}'] = detected_false
-            results[f'detected_other_{threshold}'] = detected_other
-            results[f'non_detected_total_{threshold}'] = len(non_detected)
-            results[f'non_detected_baseline_{threshold}'] = non_detected_baseline
-            results[f'non_detected_false_{threshold}'] = non_detected_false
-            results[f'non_detected_other_{threshold}'] = non_detected_other
-            
-            # Calculate detection rates
-            if results['total_baseline'] > 0:
-                results[f'baseline_detection_rate_{threshold}'] = detected_baseline / results['total_baseline']
-            else:
-                results[f'baseline_detection_rate_{threshold}'] = 0
+            # Process for each threshold
+            for threshold in thresholds:
+                key = f"{value_type}_{threshold}"
                 
-            if results['total_false'] > 0:
-                results[f'false_detection_rate_{threshold}'] = detected_false / results['total_false']
-            else:
-                results[f'false_detection_rate_{threshold}'] = 0
+                # Initialize results for this value type and threshold if not already done
+                if key not in results_by_type_threshold:
+                    results_by_type_threshold[key] = []
                 
-            if results['total_other'] > 0:
-                results[f'other_detection_rate_{threshold}'] = detected_other / results['total_other']
-            else:
-                results[f'other_detection_rate_{threshold}'] = 0
-        
-        return results
+                # Identify detected mutations based on threshold
+                detected_mutations = value_type_df[value_type_df['generation'] < threshold]['variant'].unique()
+                
+                # Process each mutation
+                for mutation in all_mutations:
+                    detected = mutation in detected_mutations
+                    is_baseline = mutation in baseline_mutations
+                    is_false = mutation in false_mutations
+                    is_rest = mutation in rest_mutations if rest_mutations else not (is_baseline or is_false)
+                    
+                    # Add to results
+                    results_by_type_threshold[key].append({
+                        'Scenario': condition_name,
+                        'condition': scenario_name,
+                        'mutation_name': mutation,
+                        'detected': detected,
+                        'baseline_mutation': is_baseline,
+                        'false_mutation': is_false,
+                        'rest_mutation': is_rest
+                    })
     
-    except Exception as e:
-        print(f"Error processing {file_path}: {e}")
-        return None
-
-# Function to find all civet_results.csv files
-def find_civet_files(base_dir):
-    pattern = os.path.join(base_dir, "SCENARIO_*", "*", "civet_res", "civet_results.csv")
-    return glob.glob(pattern)
-
-# Main function to analyze all files and create summary
-def main():
-    base_dir = "/home/linxy29/data/CIVET/simulation"  # Assuming the script runs from the simulation directory
-    civet_files = find_civet_files(base_dir)
-    
-    all_results = []
-    
-    for file_path in civet_files:
-        # Extract scenario and condition from the file path
-        path_parts = file_path.split(os.sep)
-        scenario_name = path_parts[-4]
-        condition_name = path_parts[-3]
+    # Create DataFrames and save results to CSV files
+    for key, results in results_by_type_threshold.items():
+        if not results:
+            continue
+            
+        results_df = pd.DataFrame(results)
         
-        # Analyze the file
-        results = analyze_civet_file(file_path, scenario_name, condition_name)
-        if results:
-            all_results.append(results)
-    
-    # Create dataframe from all results
-    if all_results:
-        summary_df = pd.DataFrame(all_results)
+        # Create output filename
+        value_type, threshold = key.rsplit('_', 1)
+        output_file = os.path.join(root_dir, f"civet_mutation_combine_{value_type}_threshold_{threshold}.csv")
         
-        # Save summary to CSV
-        summary_df.to_csv(os.path.join(base_dir, "civet_analysis_summary.csv"), index=False)
-        print(f"Analysis complete. Results saved to civet_analysis_summary.csv")
+        # Save results to CSV
+        results_df.to_csv(output_file, index=False)
+        print(f"Results saved to {output_file}")
         
-        # Also create per-threshold summary tables
-        for threshold in thresholds:
-            threshold_cols = [col for col in summary_df.columns if str(threshold) in col or col in ['scenario', 'condition']]
-            threshold_df = summary_df[threshold_cols]
-            threshold_df.to_csv(os.path.join(base_dir, f"civet_analysis_threshold_{threshold}.csv"), index=False)
-            print(f"Threshold {threshold} summary saved to civet_analysis_threshold_{threshold}.csv")
-    else:
-        print("No results were generated. Check file paths and data format.")
+        # Calculate and print summary statistics
+        print(f"\nSummary Statistics for {key}:")
+        detected_counts = results_df[results_df['detected'] == True].groupby(['baseline_mutation', 'false_mutation', 'rest_mutation']).size()
+        non_detected_counts = results_df[results_df['detected'] == False].groupby(['baseline_mutation', 'false_mutation', 'rest_mutation']).size()
+        
+        print("\nDetected Mutations:")
+        print(detected_counts)
+        
+        print("\nNon-Detected Mutations:")
+        print(non_detected_counts)
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Process civet_results.csv files and generate mutation analysis')
+    parser.add_argument('root_dir', type=str, help='Root directory containing scenario folders')
+    
+    args = parser.parse_args()
+    
+    process_civet_results(args.root_dir)
