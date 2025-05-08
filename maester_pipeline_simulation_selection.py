@@ -1,3 +1,11 @@
+# This script is used to process the simulation data to filter variants and cells based on clonal hematopoiesis criteria:
+# - Mean coverage >5 per cell
+# - Mean quality >30 (Note: quality data not available in this simulation, will be skipped)
+# - VAF of 0% in at least 50% of cells
+# - VAF >50% in at least 10 cells
+
+# Usage: python maester_pipeline_simulation_selection.py --base-dir /Users/linxy29/Documents/Data/CIVET/simulation --disable-zero-vaf-filter
+
 import os
 import numpy as np
 import pandas as pd
@@ -6,17 +14,21 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.sparse import csr_matrix
 import re
+import argparse
 
-def process_simulation_data(sim_dir):
+def process_simulation_data(sim_dir, apply_coverage_filter=True, apply_zero_vaf_filter=True, apply_high_vaf_filter=True):
     """
     Process simulation data to filter variants and cells based on clonal hematopoiesis criteria:
     - Mean coverage >5 per cell
     - Mean quality >30 (Note: quality data not available in this simulation, will be skipped)
     - VAF of 0% in at least 50% of cells
-    - VAF >50% in at least 10 cells 
+    - VAF >50% in at least 10 cells
     
     Args:
         sim_dir: Path to the simulation directory
+        apply_coverage_filter: Whether to apply the coverage filter (default: True)
+        apply_zero_vaf_filter: Whether to apply the zero VAF filter (default: True)
+        apply_high_vaf_filter: Whether to apply the high VAF filter (default: True)
         
     Returns:
         Dictionary containing filtered variants and cells
@@ -24,12 +36,27 @@ def process_simulation_data(sim_dir):
     print(f"Processing simulation data from: {sim_dir}")
     
     # Extract scenario and condition information
+    # First try to extract scenario using regex
     scenario_match = re.search(r'(SCENARIO\d+)', sim_dir)
-    scenario = scenario_match.group(1) if scenario_match else "unknown"
+    if scenario_match:
+        scenario = scenario_match.group(1)
+    else:
+        # If regex fails, try to extract from path structure
+        parts = sim_dir.split(os.sep)
+        # Look for a directory that starts with "SCENARIO"
+        for part in parts:
+            if part.startswith("SCENARIO"):
+                scenario = part
+                break
+        else:
+            # If still not found, use the second-to-last directory as scenario
+            scenario = parts[-2] if len(parts) > 1 else "unknown"
     
     # Get the parameter/condition (last part of the path)
     parts = sim_dir.split(os.sep)
     condition = parts[-1] if parts else "unknown"
+    
+    print(f"Extracted scenario: {scenario}, condition: {condition}")
     
     # Load cell barcodes
     barcodes_file = os.path.join(sim_dir, 'cellSNP', 'cellSNP.tag.barcodes.txt')
@@ -98,28 +125,45 @@ def process_simulation_data(sim_dir):
     
     # Apply filters for informative variants
     # Track variants after each filter
-    coverage_filter_passed = [i for i in range(len(mutations)) if mean_coverage[i] > 5]
-    filter_stats['after_filters']['coverage_filter'] = len(coverage_filter_passed)
-    print(f"Variants after coverage filter (>5): {len(coverage_filter_passed)}")
+    if apply_coverage_filter:
+        coverage_filter_passed = [i for i in range(len(mutations)) if mean_coverage[i] > 5]
+        filter_stats['after_filters']['coverage_filter'] = len(coverage_filter_passed)
+        print(f"Variants after coverage filter (>5): {len(coverage_filter_passed)}")
+    else:
+        coverage_filter_passed = list(range(len(mutations)))
+        filter_stats['after_filters']['coverage_filter'] = len(coverage_filter_passed)
+        print("Coverage filter disabled - all variants passed")
     
-    zero_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_zero_vaf[i] >= 0.5*n_cells]
-    filter_stats['after_filters']['zero_vaf_filter'] = len(zero_vaf_filter_passed)
-    print(f"Variants after zero VAF filter (≥50% cells): {len(zero_vaf_filter_passed)}")
+    if apply_zero_vaf_filter:
+        zero_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_zero_vaf[i] >= 0.5*n_cells]
+        filter_stats['after_filters']['zero_vaf_filter'] = len(zero_vaf_filter_passed)
+        print(f"Variants after zero VAF filter (≥50% cells): {len(zero_vaf_filter_passed)}")
+    else:
+        zero_vaf_filter_passed = list(range(len(mutations)))
+        filter_stats['after_filters']['zero_vaf_filter'] = len(zero_vaf_filter_passed)
+        print("Zero VAF filter disabled - all variants passed")
     
-    high_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_high_vaf[i] >= 10]
-    filter_stats['after_filters']['high_vaf_filter'] = len(high_vaf_filter_passed)
-    print(f"Variants after high VAF filter (≥10 cells): {len(high_vaf_filter_passed)}")
+    if apply_high_vaf_filter:
+        high_vaf_filter_passed = [i for i in range(len(mutations)) if cells_with_high_vaf[i] >= 10]
+        filter_stats['after_filters']['high_vaf_filter'] = len(high_vaf_filter_passed)
+        print(f"Variants after high VAF filter (≥10 cells): {len(high_vaf_filter_passed)}")
+    else:
+        high_vaf_filter_passed = list(range(len(mutations)))
+        filter_stats['after_filters']['high_vaf_filter'] = len(high_vaf_filter_passed)
+        print("High VAF filter disabled - all variants passed")
     
     # Combine all filters
     informative_variants = []
     for i in range(len(mutations)):
         # Filter criteria:
-        # 1. Mean coverage > 5
-        # 2. VAF = 0% in at least 50% of cells
-        # 3. VAF > 50% in at least 10 cells 
-        if (mean_coverage[i] > 5 and 
-            cells_with_zero_vaf[i] >= 0.5*n_cells and 
-            cells_with_high_vaf[i] >= 10):
+        # 1. Mean coverage > 5 (if enabled)
+        # 2. VAF = 0% in at least 50% of cells (if enabled)
+        # 3. VAF > 50% in at least 10 cells (if enabled)
+        coverage_condition = not apply_coverage_filter or mean_coverage[i] > 5
+        zero_vaf_condition = not apply_zero_vaf_filter or cells_with_zero_vaf[i] >= 0.5*n_cells
+        high_vaf_condition = not apply_high_vaf_filter or cells_with_high_vaf[i] >= 10
+        
+        if coverage_condition and zero_vaf_condition and high_vaf_condition:
             informative_variants.append(i)
     
     filter_stats['after_filters']['all_filters'] = len(informative_variants)
@@ -278,7 +322,7 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
         
         plt.subplot(2, 2, 2)
         sns.histplot(result['variant_metrics']['pct_cells_with_zero_vaf'], bins=30)
-        plt.axvline(x=90, color='r', linestyle='--', label='Threshold (50%)')
+        plt.axvline(x=50, color='r', linestyle='--', label='Threshold (50%)')
         plt.title('Distribution of % Cells with Zero VAF')
         plt.xlabel('% Cells with VAF = 0')
         plt.legend()
@@ -287,7 +331,7 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
         sns.histplot(result['variant_metrics']['cells_with_high_vaf'], bins=30)
         plt.axvline(x=10, color='r', linestyle='--', label='Threshold (10)')
         plt.title('Distribution of Cells with High VAF')
-        plt.xlabel('Number of Cells with VAF > 50%')  
+        plt.xlabel('Number of Cells with VAF > 50%')
         plt.legend()
         
         plt.tight_layout()
@@ -304,6 +348,18 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'filter_statistics.png'))
         plt.close()
+        
+        # Save filter configuration information
+        with open(os.path.join(output_dir, 'filter_configuration.txt'), 'w') as f:
+            f.write("Filter Configuration:\n")
+            f.write("===================\n\n")
+            f.write("Coverage Filter: Enabled\n")
+            f.write("  - Mean coverage > 5 per cell\n\n")
+            f.write("Zero VAF Filter: Enabled\n")
+            f.write("  - VAF = 0% in at least 50% of cells\n\n")
+            f.write("High VAF Filter: Enabled\n")
+            f.write("  - VAF > 50% in at least 10 cells\n\n")
+            f.write("Note: This configuration can be modified using command-line arguments.\n")
 
 def find_simulation_folders(base_dir="."):
     """
@@ -334,9 +390,38 @@ def find_simulation_folders(base_dir="."):
 
 def main():
     """Main function to run the analysis"""
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(description='Process simulation data with configurable filters')
+    parser.add_argument('--base-dir', type=str, default="/home/linxy29/data/CIVET/simulation",
+                        help='Base directory where SCENARIO* folders are located')
+    parser.add_argument('--apply-coverage-filter', action='store_true', default=True,
+                        help='Apply the coverage filter (mean coverage > 5)')
+    parser.add_argument('--apply-zero-vaf-filter', action='store_true', default=True,
+                        help='Apply the zero VAF filter (VAF = 0% in at least 50% of cells)')
+    parser.add_argument('--apply-high-vaf-filter', action='store_true', default=True,
+                        help='Apply the high VAF filter (VAF > 50% in at least 10 cells)')
+    parser.add_argument('--disable-coverage-filter', action='store_true',
+                        help='Disable the coverage filter')
+    parser.add_argument('--disable-zero-vaf-filter', action='store_true',
+                        help='Disable the zero VAF filter')
+    parser.add_argument('--disable-high-vaf-filter', action='store_true',
+                        help='Disable the high VAF filter')
+    
+    args = parser.parse_args()
+    
+    # Handle disable flags (they override the enable flags)
+    apply_coverage_filter = args.apply_coverage_filter and not args.disable_coverage_filter
+    apply_zero_vaf_filter = args.apply_zero_vaf_filter and not args.disable_zero_vaf_filter
+    apply_high_vaf_filter = args.apply_high_vaf_filter and not args.disable_high_vaf_filter
+    
+    # Print filter configuration
+    print("\nFilter configuration:")
+    print(f"  Coverage filter: {'Enabled' if apply_coverage_filter else 'Disabled'}")
+    print(f"  Zero VAF filter: {'Enabled' if apply_zero_vaf_filter else 'Disabled'}")
+    print(f"  High VAF filter: {'Enabled' if apply_high_vaf_filter else 'Disabled'}")
+    
     # Base directory where SCENARIO* folders are located
-    base_dir = "/home/linxy29/data/CIVET/simulation"
-    #base_dir = "/Users/linxy29/Documents/Data/CIVET/simulation"
+    base_dir = args.base_dir
     
     # Find all simulation folders
     sim_folders = find_simulation_folders(base_dir)
@@ -358,7 +443,12 @@ def main():
         
         # Process the simulation data
         try:
-            result = process_simulation_data(sim_dir)
+            result = process_simulation_data(
+                sim_dir, 
+                apply_coverage_filter=apply_coverage_filter,
+                apply_zero_vaf_filter=apply_zero_vaf_filter,
+                apply_high_vaf_filter=apply_high_vaf_filter
+            )
             all_results[sim_dir] = result
             
             # Collect mutation data for combined output
@@ -428,8 +518,24 @@ def create_summary_report(all_results, base_dir):
     filter_data = []
     for sim_dir, result in all_results.items():
         # Extract scenario and parameter from sim_dir
+        # First try to extract scenario using regex
+        scenario_match = re.search(r'(SCENARIO\d+)', sim_dir)
+        if scenario_match:
+            scenario = scenario_match.group(1)
+        else:
+            # If regex fails, try to extract from path structure
+            parts = sim_dir.split(os.sep)
+            # Look for a directory that starts with "SCENARIO"
+            for part in parts:
+                if part.startswith("SCENARIO"):
+                    scenario = part
+                    break
+            else:
+                # If still not found, use the second-to-last directory as scenario
+                scenario = parts[-2] if len(parts) > 1 else "unknown"
+        
+        # Get the parameter/condition (last part of the path)
         parts = sim_dir.split(os.sep)
-        scenario = parts[-2] if len(parts) > 1 else "unknown"
         parameter = parts[-1] if len(parts) > 0 else "unknown"
         
         # Basic summary data
@@ -552,6 +658,18 @@ def create_summary_report(all_results, base_dir):
     plt.tight_layout()
     plt.savefig(os.path.join(summary_dir, 'filter_effects_by_scenario.png'))
     plt.close()
+    
+    # Save filter configuration information
+    with open(os.path.join(summary_dir, 'filter_configuration.txt'), 'w') as f:
+        f.write("Filter Configuration:\n")
+        f.write("===================\n\n")
+        f.write("Coverage Filter: Enabled\n")
+        f.write("  - Mean coverage > 5 per cell\n\n")
+        f.write("Zero VAF Filter: Enabled\n")
+        f.write("  - VAF = 0% in at least 50% of cells\n\n")
+        f.write("High VAF Filter: Enabled\n")
+        f.write("  - VAF > 50% in at least 10 cells\n\n")
+        f.write("Note: This configuration can be modified using command-line arguments.\n")
     
     print(f"\nSummary report created at {summary_dir}")
 
