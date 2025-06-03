@@ -7,8 +7,8 @@ from collections import defaultdict
 os.chdir("/Users/linxy29/Documents/Data/CIVET/simulation")
 
 # Define the generation thresholds
-THRESHOLD_1 = 12
-THRESHOLD_2 = 87
+THRESHOLD_1 = 5
+THRESHOLD_2 = 95
 
 def find_cell_metadata_files():
     """Find all simulation_cell_metadata.csv files in SCENARIO_* folders"""

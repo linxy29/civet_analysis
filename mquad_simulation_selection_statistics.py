@@ -1,3 +1,5 @@
+## Usage: python civet_simulation_selection_statistics.py /Users/linxy29/Documents/Data/CIVET/simulation                   
+
 import os
 import pandas as pd
 import glob
