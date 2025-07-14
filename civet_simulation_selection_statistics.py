@@ -14,7 +14,7 @@ def process_civet_results(root_dir):
     """
     # Dictionary to store results by value type and threshold
     results_by_type_threshold = {}
-    thresholds = [0.01, 0.05, 1]
+    thresholds = [0.01, 0.05, 0.1]
     
     # Find all civet_results.csv files
     for civet_file in glob.glob(os.path.join(root_dir, "**/civet_res/civet_results.csv"), recursive=True):
@@ -65,6 +65,14 @@ def process_civet_results(root_dir):
             
             # Process for each threshold
             for threshold in thresholds:
+                # Create output filename to check if it exists
+                output_file = os.path.join(root_dir, f"civet_mutation_combine_{value_type}_threshold_{threshold}.csv")
+                
+                # Skip if output file already exists
+                if os.path.exists(output_file):
+                    print(f"Output file {output_file} already exists, skipping...")
+                    continue
+                
                 key = f"{value_type}_{threshold}"
                 
                 # Initialize results for this value type and threshold if not already done
