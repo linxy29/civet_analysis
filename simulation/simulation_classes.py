@@ -18,7 +18,8 @@ class Cell:
     """
     __slots__ = [
         'id', 'parent_id', 'generation', 'time',
-        'mutation_afs', 'cell_type', 'children', 'mutation_profile'
+        'mutation_afs', 'cell_type', 'children', 'mutation_profile',
+        'cell_cycle_phase', 'metabolic_state'
     ]
     
     def __init__(
@@ -28,7 +29,9 @@ class Cell:
         generation: int,
         time_point: float,
         mutation_afs: Optional[Dict[str, float]] = None,
-        cell_type: str = 'StemCell'
+        cell_type: str = 'StemCell',
+        cell_cycle_phase: str = 'G1',
+        metabolic_state: str = 'Glycolytic'
     ) -> None:
         """
         Initialize a Cell object.
@@ -47,6 +50,10 @@ class Cell:
             Maps mutation ID -> allele frequency (default None).
         cell_type : str
             The cell type (e.g., 'StemCell', 'Progenitor1', etc.).
+        cell_cycle_phase : str
+            Cell cycle phase ('G1', 'S', 'G2', 'M', 'G0').
+        metabolic_state : str
+            Metabolic state ('OXPHOS_high', 'OXPHOS_low', 'Glycolytic').
         """
         self.id = f"cell_{cid}"
         self.parent_id = None if parent_id is None else f"cell_{parent_id}"
@@ -56,3 +63,5 @@ class Cell:
         self.cell_type = cell_type
         self.children: List[str] = []
         self.mutation_profile: Dict[str, Dict[str, float]] = {}  # e.g., { mut_id: {'DP':..., 'AD':..., ...} }
+        self.cell_cycle_phase = cell_cycle_phase
+        self.metabolic_state = metabolic_state

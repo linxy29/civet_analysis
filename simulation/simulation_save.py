@@ -179,6 +179,8 @@ def save_cell_metadata(cells, output_dir, filename="cell_metadata.csv"):
             'generation': cell.generation,
             'time': cell.time,
             'cell_type': cell.cell_type,
+            'cell_cycle_phase': getattr(cell, 'cell_cycle_phase', 'G1'),
+            'metabolic_state': getattr(cell, 'metabolic_state', 'Glycolytic'),
             'children': ','.join(cell.children) if cell.children else '',
             'num_children': len(cell.children),
             'num_mutations': len(baseline_mutations) + len(denovo_mutations) + len(false_mutations),

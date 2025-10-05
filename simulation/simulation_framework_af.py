@@ -1038,6 +1038,411 @@ def run_basic_simulation(
 
     return cells, all_mutations, expr_df, gene_params
 
+# ------------------------------------------------------------------------------
+# 9) Cell Cycle and Metabolic State Functions
+# ------------------------------------------------------------------------------
+
+def assign_cell_cycle_phase(cells: List[Cell], proliferation_rate: float = 0.7) -> None:
+    """
+    Assign cell cycle phases to cells based on proliferation rate.
+
+    Parameters
+    ----------
+    cells : list of Cell
+        Cells to assign phases to
+    proliferation_rate : float
+        Fraction of cells that are proliferating (not G0)
+
+    Phase distribution (for cycling cells):
+    - G1: 40%
+    - S: 30%
+    - G2: 20%
+    - M: 10%
+    """
+    phases = ['G1', 'S', 'G2', 'M']
+    phase_probs = [0.4, 0.3, 0.2, 0.1]
+
+    for cell in cells:
+        if np.random.rand() < proliferation_rate:
+            # Cycling cell
+            cell.cell_cycle_phase = np.random.choice(phases, p=phase_probs)
+        else:
+            # Quiescent cell
+            cell.cell_cycle_phase = 'G0'
+
+def get_cell_cycle_params(phase: str, base_mutation_rate: float, base_mtdna_count: int) -> Tuple[float, int]:
+    """
+    Get phase-dependent mutation rate and mtDNA copy number.
+
+    Parameters
+    ----------
+    phase : str
+        Cell cycle phase
+    base_mutation_rate : float
+        Base mutation rate per division
+    base_mtdna_count : int
+        Base mtDNA copy number
+
+    Returns
+    -------
+    mutation_rate : float
+        Adjusted mutation rate
+    mtdna_count : int
+        Adjusted mtDNA copy number
+    """
+    phase_params = {
+        'G0': {'mut_multiplier': 1.5, 'mtdna_multiplier': 0.75},  # Arrested: damage accumulation, low copy
+        'G1': {'mut_multiplier': 1.3, 'mtdna_multiplier': 1.0},   # Early: moderate damage, normal copy
+        'S':  {'mut_multiplier': 1.0, 'mtdna_multiplier': 1.5},   # Replication: baseline rate, increased copy
+        'G2': {'mut_multiplier': 0.7, 'mtdna_multiplier': 2.0},   # Late: dilution effect, high copy
+        'M':  {'mut_multiplier': 0.7, 'mtdna_multiplier': 2.0},   # Division: dilution, high copy
+    }
+
+    params = phase_params.get(phase, {'mut_multiplier': 1.0, 'mtdna_multiplier': 1.0})
+    mutation_rate = base_mutation_rate * params['mut_multiplier']
+    mtdna_count = int(base_mtdna_count * params['mtdna_multiplier'])
+
+    return mutation_rate, mtdna_count
+
+def assign_metabolic_state(cells: List[Cell], state_mode: str = 'cell_type_dependent') -> None:
+    """
+    Assign metabolic states to cells.
+
+    Parameters
+    ----------
+    cells : list of Cell
+        Cells to assign states to
+    state_mode : str
+        'cell_type_dependent': Stem=Glycolytic, Progenitor=OXPHOS_low, Terminal=OXPHOS_high
+        'random': Random assignment
+        'stress': Most cells in OXPHOS_high (stress condition)
+    """
+    if state_mode == 'cell_type_dependent':
+        state_map = {
+            'StemCell': 'Glycolytic',
+            'Progenitor1': 'OXPHOS_low',
+            'Progenitor2': 'OXPHOS_low',
+            'TerminalCell_A': 'OXPHOS_high',
+            'TerminalCell_B': 'OXPHOS_high',
+        }
+        for cell in cells:
+            cell.metabolic_state = state_map.get(cell.cell_type, 'Glycolytic')
+
+    elif state_mode == 'random':
+        states = ['OXPHOS_high', 'OXPHOS_low', 'Glycolytic']
+        for cell in cells:
+            cell.metabolic_state = np.random.choice(states)
+
+    elif state_mode == 'stress':
+        # 70% OXPHOS_high, 20% OXPHOS_low, 10% Glycolytic
+        states = ['OXPHOS_high', 'OXPHOS_low', 'Glycolytic']
+        probs = [0.7, 0.2, 0.1]
+        for cell in cells:
+            cell.metabolic_state = np.random.choice(states, p=probs)
+
+def get_metabolic_params(state: str, base_mutation_rate: float, base_mtdna_count: int) -> Tuple[float, int, str]:
+    """
+    Get metabolic-state-dependent parameters.
+
+    Parameters
+    ----------
+    state : str
+        Metabolic state
+    base_mutation_rate : float
+        Base mutation rate
+    base_mtdna_count : int
+        Base mtDNA copy number
+
+    Returns
+    -------
+    mutation_rate : float
+        Adjusted mutation rate
+    mtdna_count : int
+        Adjusted mtDNA copy number
+    mutation_bias : str
+        Type of mutation bias ('oxidative' or 'normal')
+    """
+    state_params = {
+        'OXPHOS_high': {'mut_multiplier': 3.0, 'mtdna_multiplier': 1.5, 'bias': 'oxidative'},  # High ROS, biogenesis
+        'OXPHOS_low':  {'mut_multiplier': 1.5, 'mtdna_multiplier': 1.0, 'bias': 'oxidative'},  # Moderate ROS
+        'Glycolytic':  {'mut_multiplier': 0.8, 'mtdna_multiplier': 0.75, 'bias': 'normal'},    # Low ROS
+    }
+
+    params = state_params.get(state, {'mut_multiplier': 1.0, 'mtdna_multiplier': 1.0, 'bias': 'normal'})
+    mutation_rate = base_mutation_rate * params['mut_multiplier']
+    mtdna_count = int(base_mtdna_count * params['mtdna_multiplier'])
+
+    return mutation_rate, mtdna_count, params['bias']
+
+def introduce_metabolic_mutations(
+    mutation_rate: float,
+    mutation_bias: str = 'normal'
+) -> Dict[str, float]:
+    """
+    Introduce mutations with metabolic state-dependent spectrum.
+
+    Parameters
+    ----------
+    mutation_rate : float
+        Number of mutations to introduce (Poisson parameter)
+    mutation_bias : str
+        'oxidative' for C>T/A>G bias, 'normal' for uniform
+
+    Returns
+    -------
+    new_mutations : dict
+        Map of mutation ID to initial allele frequency
+    """
+    num_mutations = np.random.poisson(mutation_rate)
+    new_mutations = {}
+
+    if num_mutations > 0:
+        positions = np.random.randint(10001, 15000, size=num_mutations)
+
+        for pos in positions:
+            # For oxidative stress, bias toward specific mutation types
+            if mutation_bias == 'oxidative':
+                # 60% chance of oxidative-type mutation (C>T or A>G transitions)
+                if np.random.rand() < 0.6:
+                    mut_id = f"ox_m{pos}"  # Tag as oxidative
+                else:
+                    mut_id = f"m{pos}"
+            else:
+                mut_id = f"m{pos}"
+
+            new_mutations[mut_id] = np.random.uniform(0.0001, 0.01)
+
+    return new_mutations
+
+def simulate_mitophagy(cell: Cell, threshold: float = 0.7) -> None:
+    """
+    Simulate mitophagy: selective removal of high-heteroplasmy mutations.
+
+    Parameters
+    ----------
+    cell : Cell
+        Cell to apply mitophagy to
+    threshold : float
+        AF threshold above which mutations are removed (default 0.7)
+    """
+    mutations_to_remove = []
+
+    for mut_id, af in cell.mutation_afs.items():
+        if af > threshold:
+            # Remove with 80% probability (mitophagy not perfect)
+            if np.random.rand() < 0.8:
+                mutations_to_remove.append(mut_id)
+
+    for mut_id in mutations_to_remove:
+        del cell.mutation_afs[mut_id]
+
+def run_cell_cycle_simulation(
+    config: dict = CONFIG,
+    proliferation_rate: float = 0.7
+) -> Tuple[List[Cell], List[str], pd.DataFrame]:
+    """
+    Run simulation with cell cycle stage modeling.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary
+    proliferation_rate : float
+        Fraction of proliferating cells (rest are quiescent G0)
+
+    Returns
+    -------
+    cells : list of Cell
+    mutations : list of mutation IDs
+    expr_df : pd.DataFrame
+    """
+    total_cells = config["TOTAL_CELLS"]
+    base_mutation_rate = config["MTDNA_MUTATION_RATE_PER_MITOSIS"]
+    base_mtdna_count = config["MTDNA_INITIAL_COUNT"]
+
+    # 1. Run basic growth and differentiation
+    cells, mutations = simulate_stem_cell_growth_and_differentiation(
+        total_cells=total_cells,
+        mutation_rate=base_mutation_rate,  # Will be adjusted per cell
+        num_baseline_mutations=5,
+        bias=config["SEGREGATION_BIAS"],
+        r=config["MAX_DIVISION_RATE"],
+        kappa=config["GROWTH_ACCELERATION"],
+        t0=config["GROWTH_INFLECTION_TIME"],
+        diff_kappa=config["DIFF_RATE"],
+        diff_t0=config["DIFF_INFLECTION_TIME"]
+    )
+
+    # 2. Assign cell cycle phases
+    assign_cell_cycle_phase(cells, proliferation_rate=proliferation_rate)
+
+    # 3. Adjust mutation profiles based on cell cycle phase
+    for cell in cells:
+        phase_mut_rate, phase_mtdna_count = get_cell_cycle_params(
+            cell.cell_cycle_phase,
+            base_mutation_rate,
+            base_mtdna_count
+        )
+
+        # Introduce additional phase-dependent mutations
+        if cell.cell_cycle_phase == 'G0':
+            # Quiescent cells accumulate more mutations over time
+            extra_muts = introduce_new_mutations(phase_mut_rate * 0.5)
+            cell.mutation_afs.update(extra_muts)
+
+    # 4. Simulate sequencing with phase-adjusted DP
+    all_mutations = set()
+    for c in cells:
+        all_mutations.update(c.mutation_afs.keys())
+    all_mutations = sorted(all_mutations)
+
+    for cell in cells:
+        _, phase_mtdna_count = get_cell_cycle_params(
+            cell.cell_cycle_phase,
+            base_mutation_rate,
+            base_mtdna_count
+        )
+        # Adjust mean DP based on mtDNA copy number
+        adjusted_mean_dp = config["MEAN_DP"] * (phase_mtdna_count / base_mtdna_count)
+        simulate_read_depth(
+            cell,
+            all_mutations=all_mutations,
+            mean_dp=adjusted_mean_dp,
+            dp_dispersion=config["DP_DISPERSION"],
+            base_error_rate=config["BASE_ERROR_RATE"]
+        )
+
+    # 5. Add false mutations
+    false_mutations = add_false_mutations(
+        cells,
+        false_mutation_rate=0.001,
+        false_mutation_cell_fraction=0.3,
+        mean_dp=config["MEAN_DP"],
+        dp_dispersion=config["DP_DISPERSION"]
+    )
+
+    all_mutations = sorted(all_mutations) + false_mutations
+
+    # 6. Gene expression
+    gene_params, _ = generate_gene_params(
+        num_genes=config["NUM_GENES"],
+        specific_gene_frac=config["SPECIFIC_GENE_FRAC"]
+    )
+    expr_df = simulate_gene_expression_for_cells(
+        cells,
+        gene_params=gene_params,
+        alpha=config["ALPHA"],
+        zero_inflation_prob=config["ZERO_INFLATION_PROB"]
+    )
+
+    return cells, all_mutations, expr_df, gene_params
+
+def run_metabolic_simulation(
+    config: dict = CONFIG,
+    metabolic_mode: str = 'cell_type_dependent',
+    apply_mitophagy: bool = True
+) -> Tuple[List[Cell], List[str], pd.DataFrame]:
+    """
+    Run simulation with metabolic state modeling.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary
+    metabolic_mode : str
+        'cell_type_dependent', 'random', or 'stress'
+    apply_mitophagy : bool
+        Whether to apply mitophagy to remove high-AF mutations
+
+    Returns
+    -------
+    cells : list of Cell
+    mutations : list of mutation IDs
+    expr_df : pd.DataFrame
+    """
+    total_cells = config["TOTAL_CELLS"]
+    base_mutation_rate = config["MTDNA_MUTATION_RATE_PER_MITOSIS"]
+    base_mtdna_count = config["MTDNA_INITIAL_COUNT"]
+
+    # 1. Run basic growth and differentiation
+    cells, mutations = simulate_stem_cell_growth_and_differentiation(
+        total_cells=total_cells,
+        mutation_rate=base_mutation_rate,
+        num_baseline_mutations=5,
+        bias=config["SEGREGATION_BIAS"],
+        r=config["MAX_DIVISION_RATE"],
+        kappa=config["GROWTH_ACCELERATION"],
+        t0=config["GROWTH_INFLECTION_TIME"],
+        diff_kappa=config["DIFF_RATE"],
+        diff_t0=config["DIFF_INFLECTION_TIME"]
+    )
+
+    # 2. Assign metabolic states
+    assign_metabolic_state(cells, state_mode=metabolic_mode)
+
+    # 3. Adjust mutation profiles based on metabolic state
+    for cell in cells:
+        met_mut_rate, met_mtdna_count, mut_bias = get_metabolic_params(
+            cell.metabolic_state,
+            base_mutation_rate,
+            base_mtdna_count
+        )
+
+        # Introduce metabolic-dependent mutations
+        extra_muts = introduce_metabolic_mutations(met_mut_rate * 0.3, mutation_bias=mut_bias)
+        cell.mutation_afs.update(extra_muts)
+
+        # Apply mitophagy to OXPHOS_high cells
+        if apply_mitophagy and cell.metabolic_state == 'OXPHOS_high':
+            simulate_mitophagy(cell, threshold=0.7)
+
+    # 4. Simulate sequencing with metabolic-adjusted DP
+    all_mutations = set()
+    for c in cells:
+        all_mutations.update(c.mutation_afs.keys())
+    all_mutations = sorted(all_mutations)
+
+    for cell in cells:
+        _, met_mtdna_count, _ = get_metabolic_params(
+            cell.metabolic_state,
+            base_mutation_rate,
+            base_mtdna_count
+        )
+        # Adjust mean DP based on mtDNA copy number
+        adjusted_mean_dp = config["MEAN_DP"] * (met_mtdna_count / base_mtdna_count)
+        simulate_read_depth(
+            cell,
+            all_mutations=all_mutations,
+            mean_dp=adjusted_mean_dp,
+            dp_dispersion=config["DP_DISPERSION"],
+            base_error_rate=config["BASE_ERROR_RATE"]
+        )
+
+    # 5. Add false mutations
+    false_mutations = add_false_mutations(
+        cells,
+        false_mutation_rate=0.001,
+        false_mutation_cell_fraction=0.3,
+        mean_dp=config["MEAN_DP"],
+        dp_dispersion=config["DP_DISPERSION"]
+    )
+
+    all_mutations = sorted(all_mutations) + false_mutations
+
+    # 6. Gene expression
+    gene_params, _ = generate_gene_params(
+        num_genes=config["NUM_GENES"],
+        specific_gene_frac=config["SPECIFIC_GENE_FRAC"]
+    )
+    expr_df = simulate_gene_expression_for_cells(
+        cells,
+        gene_params=gene_params,
+        alpha=config["ALPHA"],
+        zero_inflation_prob=config["ZERO_INFLATION_PROB"]
+    )
+
+    return cells, all_mutations, expr_df, gene_params
+
 if __name__ == "__main__":
     # Parse command line arguments to get config file path
     import argparse

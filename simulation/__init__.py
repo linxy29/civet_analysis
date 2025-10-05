@@ -6,7 +6,9 @@ from .simulation_framework_af import (
     run_basic_simulation,
     load_config,
     simulate_read_depth,
-    add_false_mutations
+    add_false_mutations,
+    run_cell_cycle_simulation,
+    run_metabolic_simulation
 )
 from .simulation_classes import Cell
 from .simulation_save import (
@@ -21,6 +23,8 @@ __all__ = [
     'load_config',
     'simulate_read_depth',
     'add_false_mutations',
+    'run_cell_cycle_simulation',
+    'run_metabolic_simulation',
     'Cell',
     'save_simulation_data',
     'export_mtx_for_dp_ad',
