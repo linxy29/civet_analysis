@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
+from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc, precision_recall_curve
 import warnings
 import re
 warnings.filterwarnings('ignore')
@@ -21,16 +21,21 @@ sns.set_palette("husl")
 
 def sort_mutation_rates_numerically(conditions):
     """
-    Sort mutation rate conditions numerically instead of alphabetically.
+    Sort mutation rate and depth conditions numerically instead of alphabetically.
     For example: mutation_rate_1, mutation_rate_2, mutation_rate_4, mutation_rate_8, mutation_rate_16
+    Or: depth_50, depth_100, depth_200, depth_500, depth_1000
     """
     def extract_rate(condition):
         # Extract the number from mutation_rate_X pattern
         match = re.search(r'mutation_rate_(\d+)', condition)
         if match:
             return int(match.group(1))
-        return float('inf')  # Put non-mutation_rate conditions at the end
-    
+        # Extract the number from depth_X pattern
+        match = re.search(r'depth_(\d+)', condition)
+        if match:
+            return int(match.group(1))
+        return float('inf')  # Put non-matching conditions at the end
+
     return sorted(conditions, key=extract_rate)
 
 def load_and_combine_data(files):
@@ -56,11 +61,11 @@ def load_and_combine_data(files):
     # Start with the first available dataframe
     first_method = list(dataframes.keys())[0]
     combined_df = dataframes[first_method].copy()
-    
+
     # Find common merge columns across all dataframes, case-insensitive
     expected_cols = ['scenario', 'condition', 'mutation_name']
     merge_cols = []
-    
+
     for expected_col in expected_cols:
         # Check first dataframe for column match (case-insensitive)
         matches = [col for col in combined_df.columns if col.lower() == expected_col.lower()]
@@ -68,11 +73,11 @@ def load_and_combine_data(files):
             merge_cols.append(matches[0])
         else:
             print(f"Warning: Could not find column matching '{expected_col}' in the first dataframe")
-    
+
     if len(merge_cols) != 3:
         print(f"Only found {len(merge_cols)} merge columns: {merge_cols}")
         print("Looking for columns with similar names...")
-        
+
         # Try to find columns with similar names
         for expected_col in expected_cols:
             if not any(col.lower() == expected_col.lower() for col in merge_cols):
@@ -80,16 +85,24 @@ def load_and_combine_data(files):
                 if potential_matches:
                     merge_cols.append(potential_matches[0])
                     print(f"Found potential match for '{expected_col}': '{potential_matches[0]}'")
-    
+
     if len(merge_cols) != 3:
         raise ValueError(f"Could not identify all required merge columns. Found: {merge_cols}")
-    
+
     print(f"Using merge columns: {merge_cols}")
-    
+
     # Rename identification column
     if 'detected' in combined_df.columns:
         combined_df = combined_df.rename(columns={'detected': f'{first_method}_detected'})
-    
+
+    # Rename p-value column if it exists
+    if 'pval' in combined_df.columns:
+        combined_df = combined_df.rename(columns={'pval': f'{first_method}_pval'})
+    elif 'p_value' in combined_df.columns:
+        combined_df = combined_df.rename(columns={'p_value': f'{first_method}_pval'})
+    elif 'pvalue' in combined_df.columns:
+        combined_df = combined_df.rename(columns={'pvalue': f'{first_method}_pval'})
+
     # Keep metadata columns from civet files (prefer civet_LRT if available)
     metadata_cols = [col for col in combined_df.columns if col.startswith('metadata_')]
     if 'informative' in combined_df.columns:
@@ -99,14 +112,22 @@ def load_and_combine_data(files):
     for method, df in dataframes.items():
         if method == first_method:
             continue
-            
+
         # Prepare dataframe for merging
         df_merge = df.copy()
-        
+
         # Rename identification column
         if 'detected' in df_merge.columns:
             df_merge = df_merge.rename(columns={'detected': f'{method}_detected'})
-        
+
+        # Rename p-value column if it exists
+        if 'pval' in df_merge.columns:
+            df_merge = df_merge.rename(columns={'pval': f'{method}_pval'})
+        elif 'p_value' in df_merge.columns:
+            df_merge = df_merge.rename(columns={'p_value': f'{method}_pval'})
+        elif 'pvalue' in df_merge.columns:
+            df_merge = df_merge.rename(columns={'pvalue': f'{method}_pval'})
+
         # Find matching column names in this dataframe
         matching_cols = []
         for col in merge_cols:
@@ -116,18 +137,21 @@ def load_and_combine_data(files):
             else:
                 print(f"Warning: Could not find column matching '{col}' in {method} dataframe")
                 return None, None, None
-                
+
         # Map original merge columns to this dataframe's columns
         rename_dict = {target: source for source, target in matching_cols}
         if rename_dict:
             df_merge = df_merge.rename(columns=rename_dict)
-        
-        # Select columns to merge (identification column + merge keys)
+
+        # Select columns to merge (identification column + p-value column + merge keys)
         cols_to_keep = list(merge_cols)  # Use a copy of merge_cols
         detected_col = f'{method}_detected'
+        pval_col = f'{method}_pval'
         if detected_col in df_merge.columns:
             cols_to_keep.append(detected_col)
-        
+        if pval_col in df_merge.columns:
+            cols_to_keep.append(pval_col)
+
         # Add metadata columns if this is a civet file and we don't have them yet
         if method.startswith('civet') and not metadata_cols:
             civet_metadata_cols = [col for col in df_merge.columns if col.startswith('metadata_')]
@@ -135,11 +159,11 @@ def load_and_combine_data(files):
                 civet_metadata_cols.append('informative')
             cols_to_keep.extend(civet_metadata_cols)
             metadata_cols = civet_metadata_cols
-        
+
         # Keep only columns that exist in the dataframe
         cols_to_merge = [col for col in cols_to_keep if col in df_merge.columns]
         df_to_merge = df_merge[cols_to_merge]
-        
+
         # Merge with combined dataframe
         combined_df = pd.merge(combined_df, df_to_merge, on=merge_cols, how='outer', suffixes=('', f'_{method}'))
     
@@ -215,12 +239,48 @@ def calculate_performance_metrics(df, methods):
         f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
         accuracy = (tp + tn) / (tp + tn + fp + fn)
 
-        # Calculate AUROC
-        try:
-            fpr, tpr, _ = roc_curve(y_true, y_pred)
-            auroc = auc(fpr, tpr)
-        except:
-            auroc = 0
+        # Calculate AUROC using p-values if available
+        pval_col = f'{method}_pval'
+        auroc = 0
+
+        if pval_col in df.columns:
+            # Use p-values for AUROC calculation
+            try:
+                # Filter to rows with valid p-values and true mutation labels
+                pval_mask = ~(df[pval_col].isna() | df['true_mutation'].isna())
+                y_true_auroc = df.loc[pval_mask, 'true_mutation']
+                y_pval = df.loc[pval_mask, pval_col]
+
+                if len(y_true_auroc) > 0 and y_true_auroc.nunique() > 1:
+                    # Convert p-values to numeric and handle edge cases
+                    y_pval = pd.to_numeric(y_pval, errors='coerce')
+
+                    # Remove any remaining NaN values
+                    valid_idx = ~y_pval.isna()
+                    y_true_auroc = y_true_auroc[valid_idx]
+                    y_pval = y_pval[valid_idx]
+
+                    if len(y_true_auroc) > 0 and y_true_auroc.nunique() > 1:
+                        # Since lower p-values indicate stronger evidence,
+                        # use 1 - pval as the score (so higher scores = more likely to be true)
+                        # Clip p-values to avoid issues with 0 or 1
+                        y_pval_clipped = np.clip(y_pval, 1e-10, 1 - 1e-10)
+                        y_score = 1 - y_pval_clipped
+
+                        fpr, tpr, _ = roc_curve(y_true_auroc, y_score)
+                        auroc = auc(fpr, tpr)
+                        print(f"  {method}: AUROC calculated using p-values = {auroc:.3f}")
+            except Exception as e:
+                print(f"  Warning: Could not calculate AUROC for {method} using p-values: {str(e)}")
+                auroc = 0
+        else:
+            # Fallback to binary predictions if p-values not available
+            try:
+                fpr, tpr, _ = roc_curve(y_true, y_pred)
+                auroc = auc(fpr, tpr)
+                print(f"  {method}: AUROC calculated using binary predictions = {auroc:.3f}")
+            except:
+                auroc = 0
 
         results[method] = {
             'TP': tp, 'TN': tn, 'FP': fp, 'FN': fn,
@@ -232,6 +292,141 @@ def calculate_performance_metrics(df, methods):
         }
 
     return pd.DataFrame(results).T
+
+def calculate_performance_per_condition(df, methods):
+    """
+    Calculate AUROC, AUPRC, and F1 score for each method in each scenario-condition combination
+
+    Returns:
+        DataFrame with columns: scenario, condition, method, auroc, auprc, f1_score
+    """
+    results = []
+
+    # Find scenario and condition columns
+    scenario_col = None
+    condition_col = None
+
+    for col in df.columns:
+        if 'scenario' in col.lower():
+            scenario_col = col
+        if 'condition' in col.lower():
+            condition_col = col
+
+    if not scenario_col or not condition_col:
+        print("Warning: Could not find scenario or condition columns")
+        return pd.DataFrame()
+
+    # Get unique scenario-condition combinations
+    scenarios = df[scenario_col].unique()
+
+    for scenario in scenarios:
+        scenario_df = df[df[scenario_col] == scenario]
+        conditions = scenario_df[condition_col].unique()
+
+        for condition in conditions:
+            condition_df = scenario_df[scenario_df[condition_col] == condition]
+
+            for method in methods:
+                detected_col = f'{method}_detected'
+                pval_col = f'{method}_pval'
+
+                if detected_col not in condition_df.columns:
+                    continue
+
+                # Filter valid data
+                mask = ~(condition_df[detected_col].isna() | condition_df['true_mutation'].isna())
+
+                if mask.sum() == 0:
+                    continue
+
+                y_true = condition_df.loc[mask, 'true_mutation']
+                y_pred = condition_df.loc[mask, detected_col]
+
+                # Convert to boolean if needed
+                if y_pred.dtype == 'object':
+                    y_pred = y_pred.map({'TRUE': True, 'FALSE': False, True: True, False: False})
+
+                # Calculate F1 score
+                try:
+                    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+                    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+                    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+                except:
+                    f1_score = 0
+
+                # Calculate AUROC using p-values if available
+                auroc = 0
+                if pval_col in condition_df.columns:
+                    try:
+                        pval_mask = ~(condition_df[pval_col].isna() | condition_df['true_mutation'].isna())
+                        y_true_auroc = condition_df.loc[pval_mask, 'true_mutation']
+                        y_pval = condition_df.loc[pval_mask, pval_col]
+
+                        if len(y_true_auroc) > 0 and y_true_auroc.nunique() > 1:
+                            y_pval = pd.to_numeric(y_pval, errors='coerce')
+                            valid_idx = ~y_pval.isna()
+                            y_true_auroc = y_true_auroc[valid_idx]
+                            y_pval = y_pval[valid_idx]
+
+                            if len(y_true_auroc) > 0 and y_true_auroc.nunique() > 1:
+                                y_pval_clipped = np.clip(y_pval, 1e-10, 1 - 1e-10)
+                                y_score = 1 - y_pval_clipped
+                                fpr, tpr, _ = roc_curve(y_true_auroc, y_score)
+                                auroc = auc(fpr, tpr)
+                    except Exception as e:
+                        print(f"  Warning: Could not calculate AUROC for {method} in {scenario}/{condition}: {str(e)}")
+                        auroc = 0
+                else:
+                    # Fallback to binary predictions
+                    try:
+                        if y_true.nunique() > 1:
+                            fpr, tpr, _ = roc_curve(y_true, y_pred)
+                            auroc = auc(fpr, tpr)
+                    except:
+                        auroc = 0
+
+                # Calculate AUPRC using p-values if available
+                auprc = 0
+                if pval_col in condition_df.columns:
+                    try:
+                        pval_mask = ~(condition_df[pval_col].isna() | condition_df['true_mutation'].isna())
+                        y_true_auprc = condition_df.loc[pval_mask, 'true_mutation']
+                        y_pval_pr = condition_df.loc[pval_mask, pval_col]
+
+                        if len(y_true_auprc) > 0 and y_true_auprc.nunique() > 1:
+                            y_pval_pr = pd.to_numeric(y_pval_pr, errors='coerce')
+                            valid_idx = ~y_pval_pr.isna()
+                            y_true_auprc = y_true_auprc[valid_idx]
+                            y_pval_pr = y_pval_pr[valid_idx]
+
+                            if len(y_true_auprc) > 0 and y_true_auprc.nunique() > 1:
+                                y_pval_clipped_pr = np.clip(y_pval_pr, 1e-10, 1 - 1e-10)
+                                y_score_pr = 1 - y_pval_clipped_pr
+                                precision, recall, _ = precision_recall_curve(y_true_auprc, y_score_pr)
+                                auprc = auc(recall, precision)
+                    except Exception as e:
+                        print(f"  Warning: Could not calculate AUPRC for {method} in {scenario}/{condition}: {str(e)}")
+                        auprc = 0
+                else:
+                    # Fallback to binary predictions
+                    try:
+                        if y_true.nunique() > 1:
+                            precision, recall, _ = precision_recall_curve(y_true, y_pred)
+                            auprc = auc(recall, precision)
+                    except:
+                        auprc = 0
+
+                results.append({
+                    'scenario': scenario,
+                    'condition': condition,
+                    'method': method,
+                    'auroc': auroc,
+                    'auprc': auprc,
+                    'f1_score': f1_score
+                })
+
+    return pd.DataFrame(results)
 
 def analyze_identification_patterns(df, methods):
     """
@@ -270,15 +465,15 @@ def analyze_identification_patterns(df, methods):
     
     return identification_counts, scenario_analysis
 
-def create_visualizations(df, methods, performance_df, identification_counts, scenario_analysis):
+def create_visualizations(df, methods, performance_df, identification_counts, scenario_analysis, performance_per_condition_df):
     """
     Create comprehensive visualizations with six specific subplots:
     1) Number of mutations identified by method
     2) Precision and % effective SNPs
-    3) AUROC by method
+    3) AUPRC distribution (box plot)
     4) Proportion of true/false mutations (stacked bar)
     5) Method identification correlation
-    6) F1 Score by method
+    6) F1 Score distribution (box plot)
     """
     # Set even larger font sizes for better readability
     plt.rcParams.update({
@@ -302,11 +497,13 @@ def create_visualizations(df, methods, performance_df, identification_counts, sc
     bars = plt.bar(methods_with_data, counts)
     for bar in bars:
         height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                f'{int(height)}', ha='center', va='bottom', fontsize=16)
+        if height > 0:  # Only add label if count > 0 (for log scale)
+            plt.text(bar.get_x() + bar.get_width()/2., height * 1,
+                    f'{int(height)}', ha='center', va='bottom', fontsize=16)
 
     plt.title('Total identifications per Method', fontsize=22)
-    plt.ylabel('Number of identifications', fontsize=24)
+    plt.ylabel('Number of identifications (log scale)', fontsize=24)
+    plt.yscale('log')  # Set y-axis to logarithmic scale
     plt.xticks(rotation=45, fontsize=24)
     plt.yticks(fontsize=24)
 
@@ -347,24 +544,42 @@ def create_visualizations(df, methods, performance_df, identification_counts, sc
     plt.ylim(0, 1)
     plt.legend(fontsize=16)
 
-    # 3. AUROC by method
-    plt.subplot(2, 3, 3)
+    # 3. AUPRC distribution (box plot)
+    ax3 = plt.subplot(2, 3, 3)
 
-    methods_with_data = [m for m in methods if m in performance_df.index]
-    auroc_values = [performance_df.loc[m, 'AUROC'] if m in performance_df.index and 'AUROC' in performance_df.columns else 0 for m in methods_with_data]
+    # Prepare data for box plot
+    auprc_data = []
+    labels = []
+    for method in methods:
+        method_data = performance_per_condition_df[performance_per_condition_df['method'] == method]['auprc']
+        # Filter out zeros (failed calculations)
+        method_data = method_data[method_data > 0]
+        if len(method_data) > 0:
+            auprc_data.append(method_data.values)
+            labels.append(method)
 
-    bars = plt.bar(methods_with_data, auroc_values, color='steelblue')
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                f'{height:.3f}', ha='center', va='bottom', fontsize=16)
+    if auprc_data:
+        bp = ax3.boxplot(auprc_data, labels=labels, patch_artist=True,
+                         boxprops=dict(facecolor='lightgreen', alpha=0.7),
+                         medianprops=dict(linewidth=0),
+                         whiskerprops=dict(linewidth=1.5),
+                         capprops=dict(linewidth=1.5))
 
-    plt.xlabel('Methods', fontsize=20)
-    plt.ylabel('AUROC', fontsize=24)
-    plt.title('AUROC by Method', fontsize=22)
-    plt.xticks(rotation=45, fontsize=24)
-    plt.yticks(fontsize=24)
-    plt.ylim(0, 1)
+        ax3.set_ylabel('AUPRC', fontsize=24)
+        ax3.set_xlabel('Methods', fontsize=20)
+        ax3.set_title('AUPRC Distribution Across Conditions', fontsize=22)
+        ax3.tick_params(axis='x', rotation=45, labelsize=18)
+        ax3.tick_params(axis='y', labelsize=24)
+        ax3.set_ylim(0, 1.05)
+        ax3.grid(axis='y', alpha=0.3)
+
+        # Add mean markers
+        for i, data in enumerate(auprc_data):
+            mean_val = np.mean(data)
+            ax3.plot(i+1, mean_val, marker='D', color='green', markersize=6)
+    else:
+        ax3.text(0.5, 0.5, "No AUPRC data available", ha='center', va='center',
+                transform=ax3.transAxes, fontsize=18)
 
     # 4. Stacked bar plot showing true/false mutation proportions
     plt.subplot(2, 3, 4)
@@ -422,7 +637,44 @@ def create_visualizations(df, methods, performance_df, identification_counts, sc
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=16)
 
     # 5. Method identification correlation
-    plt.subplot(2, 3, 5)
+    ax5 = plt.subplot(2, 3, 5)
+    
+    # Prepare data for box plot
+    f1_data = []
+    labels = []
+    for method in methods:
+        method_data = performance_per_condition_df[performance_per_condition_df['method'] == method]['f1_score']
+        # Filter out zeros
+        method_data = method_data[method_data > 0]
+        if len(method_data) > 0:
+            f1_data.append(method_data.values)
+            labels.append(method)
+
+    if f1_data:
+        bp = ax5.boxplot(f1_data, labels=labels, patch_artist=True,
+                         boxprops=dict(facecolor='lightcoral', alpha=0.7),
+                         medianprops=dict(linewidth=0),
+                         whiskerprops=dict(linewidth=1.5),
+                         capprops=dict(linewidth=1.5))
+
+        ax5.set_ylabel('F1 Score', fontsize=24)
+        ax5.set_xlabel('Methods', fontsize=20)
+        ax5.set_title('F1 Score Distribution Across Conditions', fontsize=22)
+        ax5.tick_params(axis='x', rotation=45, labelsize=18)
+        ax5.tick_params(axis='y', labelsize=24)
+        ax5.set_ylim(0, 0.6)
+        ax5.grid(axis='y', alpha=0.3)
+
+        # Add mean markers
+        for i, data in enumerate(f1_data):
+            mean_val = np.mean(data)
+            ax5.plot(i+1, mean_val, marker='D', color='green', markersize=6)
+    else:
+        ax5.text(0.5, 0.5, "No F1 data available", ha='center', va='center',
+                transform=ax5.transAxes, fontsize=18)
+
+    # 6. F1 Score distribution (box plot)
+    plt.subplot(2, 3, 6)
     # Create a binary matrix for method identifications
     identification_matrix = pd.DataFrame()
     for method in methods:
@@ -439,25 +691,6 @@ def create_visualizations(df, methods, performance_df, identification_counts, sc
         plt.title('Method identification Correlation', fontsize=22)
         plt.xticks(fontsize=24)
         plt.yticks(fontsize=24)
-
-    # 6. F1 Score by method
-    plt.subplot(2, 3, 6)
-
-    methods_with_data = [m for m in methods if m in performance_df.index]
-    f1_values = [performance_df.loc[m, 'F1_Score'] if m in performance_df.index and 'F1_Score' in performance_df.columns else 0 for m in methods_with_data]
-
-    bars = plt.bar(methods_with_data, f1_values, color='coral')
-    for bar in bars:
-        height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                f'{height:.3f}', ha='center', va='bottom', fontsize=16)
-
-    plt.xlabel('Methods', fontsize=20)
-    plt.ylabel('F1 Score', fontsize=24)
-    plt.title('F1 Score by Method', fontsize=22)
-    plt.xticks(rotation=45, fontsize=24)
-    plt.yticks(fontsize=24)
-    plt.ylim(0, 1)
 
     plt.tight_layout()
     
@@ -536,9 +769,8 @@ def create_confusion_matrices(df, methods):
 
 def create_scenario_comparisons(df, methods, performance_df):
     """
-    Create a single plot with six subplots comparing precision, identification counts,
-    and mutation proportions across conditions for scenarios 1 and 2,
-    plus a separate plot for scenario 3
+    Create a single plot with nine subplots comparing precision, identification counts,
+    and mutation proportions across conditions for scenarios 1, 2, and 4
     """
     # Set even larger font sizes for better readability
     plt.rcParams.update({
@@ -580,28 +812,42 @@ def create_scenario_comparisons(df, methods, performance_df):
     # Get unique scenarios and conditions
     scenarios = df[scenario_col].unique()
     print(f"Found {len(scenarios)} scenarios: {scenarios}")
-    
+
     conditions = df[condition_col].unique()
     print(f"Found {len(conditions)} conditions: {conditions}")
-    
-    # We'll focus on the first two scenarios (or one if only one exists)
-    target_scenarios = scenarios[:min(2, len(scenarios))]
+
+    # We'll focus on scenarios 1, 2, and 4
+    # Sort scenarios to ensure consistent ordering
+    scenarios_sorted = sorted(scenarios)
+    target_scenarios = []
+    for scenario in scenarios_sorted:
+        if 'SCENARIO_1' in scenario or 'SCENARIO_2' in scenario or 'SCENARIO_4' in scenario:
+            target_scenarios.append(scenario)
+
     if len(target_scenarios) < 1:
-        print("Not enough scenarios to create comparison plot.")
+        print("Could not find scenarios 1, 2, or 4 to create comparison plot.")
         return
-        
-    # Create a single figure with a 2×3 layout (two rows with three subplots each)
+
+    print(f"Creating comparison plot for {len(target_scenarios)} scenarios: {target_scenarios}")
+
+    # Dynamically determine the number of rows needed
+    n_scenarios = len(target_scenarios)
+    n_cols = 3  # Always 3 columns (identifications, precision, proportions)
+
+    # Create a single figure with dynamic rows
     # Increase figure width to accommodate scenario labels on the left
-    fig = plt.figure(figsize=(36, 18))
+    fig = plt.figure(figsize=(36, 9 * n_scenarios))
     plt.suptitle(f'Scenario and Condition Comparison', fontsize=26)
-    
-    # Define subplot positions
-    # Row 1: Number of identifications and Precision for Scenario 1, and Mean Mutation Proportions for Scenario 1
-    # Row 2: Number of identifications and Precision for Scenario 2, and Mean Mutation Proportions for Scenario 2
-    subplot_positions = {
-        0: {'identifications': 1, 'precision': 2, 'proportions': 3},
-        1: {'identifications': 4, 'precision': 5, 'proportions': 6}
-    }
+
+    # Define subplot positions dynamically
+    # Each row has: Number of identifications, Precision, and Mean Mutation Proportions
+    subplot_positions = {}
+    for i in range(n_scenarios):
+        subplot_positions[i] = {
+            'identifications': i * 3 + 1,
+            'precision': i * 3 + 2,
+            'proportions': i * 3 + 3
+        }
     
     # For each target scenario, create identification count and precision subplots
     for i, scenario in enumerate(target_scenarios):
@@ -612,7 +858,7 @@ def create_scenario_comparisons(df, methods, performance_df):
         scenario_conditions = sort_mutation_rates_numerically(scenario_conditions)
         
         # 1. Number of identifications by condition for this scenario
-        plt.subplot(2, 3, subplot_positions[i]['identifications'])
+        plt.subplot(n_scenarios, 3, subplot_positions[i]['identifications'])
         identification_counts = {}
         
         for method in methods:
@@ -642,7 +888,7 @@ def create_scenario_comparisons(df, methods, performance_df):
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=16)
         
         # 2. Precision by condition for this scenario
-        plt.subplot(2, 3, subplot_positions[i]['precision'])
+        plt.subplot(n_scenarios, 3, subplot_positions[i]['precision'])
         condition_precision = {}
         
         for method in methods:
@@ -692,7 +938,7 @@ def create_scenario_comparisons(df, methods, performance_df):
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=16)
         
         # 3. Mutation proportions for this scenario (mean across all conditions)
-        plt.subplot(2, 3, subplot_positions[i]['proportions'])
+        plt.subplot(n_scenarios, 3, subplot_positions[i]['proportions'])
         
         # Calculate mean proportions across all conditions for each method
         stacked_data = []
@@ -754,25 +1000,29 @@ def create_scenario_comparisons(df, methods, performance_df):
     for i, scenario in enumerate(target_scenarios):
         # Position for scenario label (left side, centered vertically for each row)
         x_pos = -0.15  # Position to the left of the subplots
-        y_pos = 0.75 - i * 0.5  # Center vertically for each row
-        
+        # Calculate y position dynamically based on number of scenarios
+        # Start at top and space evenly
+        spacing = 1.0 / n_scenarios
+        y_pos = 1.0 - spacing * 0.5 - i * spacing  # Start at top, center of first row
+
         # Add scenario label
-        fig.text(x_pos, y_pos, scenario, fontsize=24, fontweight='bold', 
+        fig.text(x_pos, y_pos, scenario, fontsize=24, fontweight='bold',
                 rotation=90, ha='center', va='center')
-    
+
     plt.tight_layout(rect=[0.05, 0, 1, 0.95])  # Adjust for the suptitle and scenario labels
-    
+
     # Save the figure
     comparison_path = os.path.join(results_dir, 'scenario_condition_comparison.png')
     plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
     print(f"Scenario-condition comparison saved as '{comparison_path}'")
-    
+
     # Now create a separate figure for scenario 3 if it exists
-    if len(scenarios) >= 3:
-        scenario3 = scenarios[2]
+    scenario3_candidates = [s for s in scenarios if 'SCENARIO_3' in s]
+    if len(scenario3_candidates) > 0:
+        scenario3 = scenario3_candidates[0]
         plt.figure(figsize=(22, 10))
         plt.suptitle(f'Analysis: {scenario3}', fontsize=26)
-        
+
         scenario_df = df[df[scenario_col] == scenario3]
         scenario_conditions = scenario_df[condition_col].unique()
         
@@ -870,144 +1120,440 @@ def create_scenario_comparisons(df, methods, performance_df):
     
     plt.show()
 
-def create_mutation_proportion_plots(df, methods):
+def create_boxplot_visualizations(performance_per_condition_df, methods):
     """
-    Create stacked bar plots showing proportions of true mutations and different types of false mutations
-    for each condition within each scenario
+    Create box plots showing AUROC, AUPRC, and F1 score distributions across conditions
+
+    Args:
+        performance_per_condition_df: DataFrame with columns [scenario, condition, method, auroc, auprc, f1_score]
+        methods: List of method names
     """
-    # Set even larger font sizes for better readability
+    # Set font sizes
     plt.rcParams.update({
         'font.size': 18,
         'axes.titlesize': 22,
         'axes.labelsize': 20,
-        'xtick.labelsize': 24,
-        'ytick.labelsize': 24,
+        'xtick.labelsize': 18,
+        'ytick.labelsize': 18,
         'legend.fontsize': 16,
         'figure.titlesize': 24
     })
-    
-    # Check if scenario and condition columns exist
-    scenario_col = None
-    condition_col = None
-    mutation_type_col = None
-    
-    for col in df.columns:
-        if 'scenario' in col.lower():
-            scenario_col = col
-        if 'condition' in col.lower():
-            condition_col = col
-        if 'mutation_type' in col.lower():
-            mutation_type_col = col
-            
-    if not scenario_col:
-        print("Warning: No scenario column found. Cannot create scenario-based plots.")
-        return
-        
-    if not condition_col:
-        print("Warning: No condition column found. Cannot create condition-based plots.")
-        return
-    
-    # Get unique scenarios and conditions
-    scenarios = df[scenario_col].unique()
-    
+
     # Create directory for results
     results_dir = os.path.join(os.getcwd(), "overall_analysis")
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
-    
-    # For each scenario, create a figure with subplots for each condition
-    for scenario in scenarios:
-        scenario_df = df[df[scenario_col] == scenario]
-        conditions = scenario_df[condition_col].unique()
-        
-        # Sort conditions numerically if they are mutation rates
-        conditions = sort_mutation_rates_numerically(conditions)
-        
-        # Calculate number of rows and columns for subplots
-        n_conditions = len(conditions)
-        n_cols = min(3, n_conditions)  # Maximum 3 columns
-        n_rows = (n_conditions + n_cols - 1) // n_cols  # Ceiling division
-        
-        # Create figure with larger size
-        plt.figure(figsize=(10*n_cols, 8*n_rows))
-        plt.suptitle(f'Mutation Proportions: {scenario}', fontsize=26)
-        
-        # For each condition, create a subplot
-        for i, condition in enumerate(conditions):
-            condition_df = scenario_df[scenario_df[condition_col] == condition]
-            
-            # Create subplot
-            ax = plt.subplot(n_rows, n_cols, i+1)
-            
-            # Calculate proportions for each method
-            stacked_data = []
-            
-            for method in methods:
-                detected_col = f'{method}_detected'
-                if detected_col not in condition_df.columns or 'true_mutation' not in condition_df.columns:
-                    continue
-                    
-                # Filter to only identified mutations
-                detected = condition_df[detected_col].map({'TRUE': True, 'FALSE': False, True: True, False: False})
-                detected_df = condition_df[detected == True].copy()
-                
-                if len(detected_df) == 0:
-                    continue
-                    
-                # Calculate proportions
-                true_proportion = detected_df['true_mutation'].mean()
-                false_proportion = 1 - true_proportion
-                
-                # If we have mutation_type information, break down false positives by type
-                if mutation_type_col and mutation_type_col in detected_df.columns:
-                    # Filter to only false positives
-                    false_df = detected_df[detected_df['true_mutation'] == False]
-                    if len(false_df) > 0:
-                        # Group by mutation type
-                        type_counts = false_df[mutation_type_col].value_counts(normalize=True)
-                        type_props = {t: c * false_proportion for t, c in type_counts.items()}
-                        
-                        # Add to stacked data
-                        data_row = {'Method': method, 'True Mutations': true_proportion}
-                        data_row.update(type_props)
-                        stacked_data.append(data_row)
-                    else:
-                        stacked_data.append({'Method': method, 'True Mutations': true_proportion, 'False Mutations': false_proportion})
-                else:
-                    stacked_data.append({'Method': method, 'True Mutations': true_proportion, 'False Mutations': false_proportion})
-            
-            if stacked_data:
-                stacked_df = pd.DataFrame(stacked_data)
-                stacked_df = stacked_df.set_index('Method')
-                
-                # Fill NaN with zeros
-                stacked_df = stacked_df.fillna(0)
-                
-                # Plot stacked bar
-                stacked_df.plot(kind='bar', stacked=True, ax=ax)
-                plt.title(f'Condition: {condition}', fontsize=22)
-                plt.xlabel('Method', fontsize=20)
-                plt.ylabel('Proportion', fontsize=24)
-                plt.xticks(rotation=45, fontsize=24)
-                plt.yticks(fontsize=24)
-                plt.ylim(0, 1)
-                
-                # Add legend to the first subplot only
-                if i == 0:
-                    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=16)
-                else:
-                    plt.legend().set_visible(False)
-            else:
-                plt.text(0.5, 0.5, "No data", ha='center', va='center', fontsize=18)
-        
-        plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for the suptitle
-        
-        # Save the figure
-        proportion_path = os.path.join(results_dir, f'scenario_{scenario}_mutation_proportions.png')
-        plt.savefig(proportion_path, dpi=300, bbox_inches='tight')
-        print(f"Mutation proportions for scenario {scenario} saved as '{proportion_path}'")
-    
+
+    # Create a figure with 3 subplots (AUROC, AUPRC, and F1)
+    fig, axes = plt.subplots(1, 3, figsize=(36, 10))
+
+    # 1. AUROC Box Plot
+    ax1 = axes[0]
+
+    # Prepare data for box plot
+    auroc_data = []
+    labels = []
+    for method in methods:
+        method_data = performance_per_condition_df[performance_per_condition_df['method'] == method]['auroc']
+        # Filter out zeros (failed calculations)
+        method_data = method_data[method_data > 0]
+        if len(method_data) > 0:
+            auroc_data.append(method_data.values)
+            labels.append(method)
+
+    if auroc_data:
+        bp1 = ax1.boxplot(auroc_data, labels=labels, patch_artist=True,
+                          boxprops=dict(facecolor='lightblue', alpha=0.7),
+                          medianprops=dict(linewidth=0),
+                          whiskerprops=dict(linewidth=1.5),
+                          capprops=dict(linewidth=1.5))
+
+        ax1.set_ylabel('AUROC', fontsize=20)
+        ax1.set_xlabel('Methods', fontsize=20)
+        ax1.set_title('AUROC Distribution Across Conditions', fontsize=22)
+        ax1.tick_params(axis='x', rotation=45)
+        ax1.set_ylim(0, 1.05)
+        ax1.grid(axis='y', alpha=0.3)
+
+        # Add mean markers
+        for i, data in enumerate(auroc_data):
+            mean_val = np.mean(data)
+            ax1.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                    label='Mean' if i == 0 else '')
+
+        ax1.legend(loc='lower right', fontsize=16)
+    else:
+        ax1.text(0.5, 0.5, "No AUROC data available", ha='center', va='center',
+                transform=ax1.transAxes, fontsize=18)
+
+    # 2. AUPRC Box Plot
+    ax2 = axes[1]
+
+    # Prepare data for box plot
+    auprc_data = []
+    labels = []
+    for method in methods:
+        method_data = performance_per_condition_df[performance_per_condition_df['method'] == method]['auprc']
+        # Filter out zeros (failed calculations)
+        method_data = method_data[method_data > 0]
+        if len(method_data) > 0:
+            auprc_data.append(method_data.values)
+            labels.append(method)
+
+    if auprc_data:
+        bp2 = ax2.boxplot(auprc_data, labels=labels, patch_artist=True,
+                          boxprops=dict(facecolor='lightgreen', alpha=0.7),
+                          medianprops=dict(linewidth=0),
+                          whiskerprops=dict(linewidth=1.5),
+                          capprops=dict(linewidth=1.5))
+
+        ax2.set_ylabel('AUPRC', fontsize=20)
+        ax2.set_xlabel('Methods', fontsize=20)
+        ax2.set_title('AUPRC Distribution Across Conditions', fontsize=22)
+        ax2.tick_params(axis='x', rotation=45)
+        ax2.set_ylim(0, 1.05)
+        ax2.grid(axis='y', alpha=0.3)
+
+        # Add mean markers
+        for i, data in enumerate(auprc_data):
+            mean_val = np.mean(data)
+            ax2.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                    label='Mean' if i == 0 else '')
+
+        ax2.legend(loc='lower right', fontsize=16)
+    else:
+        ax2.text(0.5, 0.5, "No AUPRC data available", ha='center', va='center',
+                transform=ax2.transAxes, fontsize=18)
+
+    # 3. F1 Score Box Plot
+    ax3 = axes[2]
+
+    # Prepare data for box plot
+    f1_data = []
+    labels = []
+    for method in methods:
+        method_data = performance_per_condition_df[performance_per_condition_df['method'] == method]['f1_score']
+        # Filter out zeros
+        method_data = method_data[method_data > 0]
+        if len(method_data) > 0:
+            f1_data.append(method_data.values)
+            labels.append(method)
+
+    if f1_data:
+        bp3 = ax3.boxplot(f1_data, labels=labels, patch_artist=True,
+                          boxprops=dict(facecolor='lightcoral', alpha=0.7),
+                          medianprops=dict(linewidth=0),
+                          whiskerprops=dict(linewidth=1.5),
+                          capprops=dict(linewidth=1.5))
+
+        ax3.set_ylabel('F1 Score', fontsize=20)
+        ax3.set_xlabel('Methods', fontsize=20)
+        ax3.set_title('F1 Score Distribution Across Conditions', fontsize=22)
+        ax3.tick_params(axis='x', rotation=45)
+        ax3.set_ylim(0, 0.6)
+        ax3.grid(axis='y', alpha=0.3)
+
+        # Add mean markers
+        for i, data in enumerate(f1_data):
+            mean_val = np.mean(data)
+            ax3.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                    label='Mean' if i == 0 else '')
+
+        ax3.legend(loc='lower right', fontsize=16)
+    else:
+        ax3.text(0.5, 0.5, "No F1 data available", ha='center', va='center',
+                transform=ax3.transAxes, fontsize=18)
+
+    plt.tight_layout()
+
+    # Save the figure
+    boxplot_path = os.path.join(results_dir, 'performance_boxplots_overall.png')
+    plt.savefig(boxplot_path, dpi=300, bbox_inches='tight')
+    print(f"Performance box plots saved as '{boxplot_path}'")
+
     plt.show()
+
+    # Print summary statistics
+    print("\n=== AUROC Summary Statistics ===")
+    for method in methods:
+        method_auroc = performance_per_condition_df[performance_per_condition_df['method'] == method]['auroc']
+        method_auroc = method_auroc[method_auroc > 0]
+        if len(method_auroc) > 0:
+            print(f"{method}:")
+            print(f"  Mean: {method_auroc.mean():.3f}")
+            print(f"  Median: {method_auroc.median():.3f}")
+            print(f"  Std: {method_auroc.std():.3f}")
+            print(f"  Min: {method_auroc.min():.3f}")
+            print(f"  Max: {method_auroc.max():.3f}")
+
+    print("\n=== AUPRC Summary Statistics ===")
+    for method in methods:
+        method_auprc = performance_per_condition_df[performance_per_condition_df['method'] == method]['auprc']
+        method_auprc = method_auprc[method_auprc > 0]
+        if len(method_auprc) > 0:
+            print(f"{method}:")
+            print(f"  Mean: {method_auprc.mean():.3f}")
+            print(f"  Median: {method_auprc.median():.3f}")
+            print(f"  Std: {method_auprc.std():.3f}")
+            print(f"  Min: {method_auprc.min():.3f}")
+            print(f"  Max: {method_auprc.max():.3f}")
+
+    print("\n=== F1 Score Summary Statistics ===")
+    for method in methods:
+        method_f1 = performance_per_condition_df[performance_per_condition_df['method'] == method]['f1_score']
+        method_f1 = method_f1[method_f1 > 0]
+        if len(method_f1) > 0:
+            print(f"{method}:")
+            print(f"  Mean: {method_f1.mean():.3f}")
+            print(f"  Median: {method_f1.median():.3f}")
+            print(f"  Std: {method_f1.std():.3f}")
+            print(f"  Min: {method_f1.min():.3f}")
+            print(f"  Max: {method_f1.max():.3f}")
+
+def create_auroc_scenarios_figure(performance_per_condition_df, methods):
+    """
+    Create a single figure with AUROC box plots for all scenarios
+
+    Args:
+        performance_per_condition_df: DataFrame with columns [scenario, condition, method, auroc, auprc, f1_score]
+        methods: List of method names
+    """
+    # Set font sizes
+    plt.rcParams.update({
+        'font.size': 18,
+        'axes.titlesize': 22,
+        'axes.labelsize': 20,
+        'xtick.labelsize': 18,
+        'ytick.labelsize': 18,
+        'legend.fontsize': 16,
+        'figure.titlesize': 24
+    })
+
+    # Create directory for results
+    results_dir = os.path.join(os.getcwd(), "overall_analysis")
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+
+    # Get unique scenarios and sort them
+    scenarios = sorted(performance_per_condition_df['scenario'].unique())
+    n_scenarios = len(scenarios)
+
+    # Determine subplot layout
+    if n_scenarios <= 2:
+        n_rows, n_cols = 1, n_scenarios
+        figsize = (12 * n_scenarios, 10)
+    elif n_scenarios <= 4:
+        n_rows, n_cols = 2, 2
+        figsize = (24, 20)
+    else:
+        n_rows = (n_scenarios + 2) // 3
+        n_cols = 3
+        figsize = (36, 10 * n_rows)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+    fig.suptitle('AUROC Distribution Across Scenarios', fontsize=28, y=0.995)
+
+    # Flatten axes array for easier iteration
+    if n_scenarios == 1:
+        axes = [axes]
+    elif n_rows == 1 or n_cols == 1:
+        axes = axes.flatten() if hasattr(axes, 'flatten') else [axes]
+    else:
+        axes = axes.flatten()
+
+    # Create box plot for each scenario
+    for idx, scenario in enumerate(scenarios):
+        ax = axes[idx]
+        scenario_data = performance_per_condition_df[performance_per_condition_df['scenario'] == scenario]
+
+        # Prepare AUROC data for each method
+        auroc_data = []
+        labels = []
+        for method in methods:
+            method_data = scenario_data[scenario_data['method'] == method]['auroc']
+            method_data = method_data[method_data > 0]
+            if len(method_data) > 0:
+                auroc_data.append(method_data.values)
+                labels.append(method)
+
+        if auroc_data:
+            bp = ax.boxplot(auroc_data, labels=labels, patch_artist=True,
+                           boxprops=dict(facecolor='lightblue', alpha=0.7),
+                           medianprops=dict(linewidth=0),
+                           whiskerprops=dict(linewidth=1.5),
+                           capprops=dict(linewidth=1.5))
+
+            ax.set_ylabel('AUROC', fontsize=20)
+            ax.set_xlabel('Methods', fontsize=20)
+            ax.set_title(f'{scenario}', fontsize=22)
+            ax.tick_params(axis='x', rotation=45, labelsize=16)
+            ax.tick_params(axis='y', labelsize=18)
+            ax.set_ylim(0, 1.05)
+            ax.grid(axis='y', alpha=0.3)
+
+            # Add mean markers
+            for i, data in enumerate(auroc_data):
+                mean_val = np.mean(data)
+                ax.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                       label='Mean' if i == 0 else '')
+
+            if idx == 0:  # Add legend only to first subplot
+                ax.legend(loc='lower right', fontsize=16)
+        else:
+            ax.text(0.5, 0.5, "No AUROC data available", ha='center', va='center',
+                   transform=ax.transAxes, fontsize=18)
+
+    # Hide any unused subplots
+    for idx in range(n_scenarios, len(axes)):
+        axes[idx].axis('off')
+
+    plt.tight_layout()
+
+    # Save the figure
+    auroc_scenarios_path = os.path.join(results_dir, 'auroc_scenarios_boxplots.png')
+    plt.savefig(auroc_scenarios_path, dpi=300, bbox_inches='tight')
+    print(f"AUROC scenarios figure saved as '{auroc_scenarios_path}'")
+
+    plt.show()
+
+def create_boxplot_per_scenario(performance_per_condition_df, methods):
+    """
+    Create separate box plots for each scenario showing AUROC, AUPRC, and F1 distributions
+
+    Args:
+        performance_per_condition_df: DataFrame with columns [scenario, condition, method, auroc, auprc, f1_score]
+        methods: List of method names
+    """
+    # Set font sizes
+    plt.rcParams.update({
+        'font.size': 18,
+        'axes.titlesize': 22,
+        'axes.labelsize': 20,
+        'xtick.labelsize': 18,
+        'ytick.labelsize': 18,
+        'legend.fontsize': 16,
+        'figure.titlesize': 24
+    })
+
+    # Create directory for results
+    results_dir = os.path.join(os.getcwd(), "overall_analysis")
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+
+    # Get unique scenarios
+    scenarios = performance_per_condition_df['scenario'].unique()
+
+    for scenario in scenarios:
+        scenario_data = performance_per_condition_df[performance_per_condition_df['scenario'] == scenario]
+
+        # Create a figure with 3 subplots (AUROC, AUPRC, and F1)
+        fig, axes = plt.subplots(1, 3, figsize=(36, 10))
+        fig.suptitle(f'Performance Distribution: {scenario}', fontsize=26)
+
+        # 1. AUROC Box Plot
+        ax1 = axes[0]
+        auroc_data = []
+        labels = []
+        for method in methods:
+            method_data = scenario_data[scenario_data['method'] == method]['auroc']
+            method_data = method_data[method_data > 0]
+            if len(method_data) > 0:
+                auroc_data.append(method_data.values)
+                labels.append(method)
+
+        if auroc_data:
+            bp1 = ax1.boxplot(auroc_data, labels=labels, patch_artist=True,
+                              boxprops=dict(facecolor='lightblue', alpha=0.7),
+                              medianprops=dict(linewidth=0),
+                              whiskerprops=dict(linewidth=1.5),
+                              capprops=dict(linewidth=1.5))
+
+            ax1.set_ylabel('AUROC', fontsize=20)
+            ax1.set_xlabel('Methods', fontsize=20)
+            ax1.set_title('AUROC Distribution', fontsize=22)
+            ax1.tick_params(axis='x', rotation=45)
+            ax1.set_ylim(0, 1.05)
+            ax1.grid(axis='y', alpha=0.3)
+
+            for i, data in enumerate(auroc_data):
+                mean_val = np.mean(data)
+                ax1.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                        label='Mean' if i == 0 else '')
+
+            ax1.legend(loc='lower right', fontsize=16)
+
+        # 2. AUPRC Box Plot
+        ax2 = axes[1]
+        auprc_data = []
+        labels = []
+        for method in methods:
+            method_data = scenario_data[scenario_data['method'] == method]['auprc']
+            method_data = method_data[method_data > 0]
+            if len(method_data) > 0:
+                auprc_data.append(method_data.values)
+                labels.append(method)
+
+        if auprc_data:
+            bp2 = ax2.boxplot(auprc_data, labels=labels, patch_artist=True,
+                              boxprops=dict(facecolor='lightgreen', alpha=0.7),
+                              medianprops=dict(linewidth=0),
+                              whiskerprops=dict(linewidth=1.5),
+                              capprops=dict(linewidth=1.5))
+
+            ax2.set_ylabel('AUPRC', fontsize=20)
+            ax2.set_xlabel('Methods', fontsize=20)
+            ax2.set_title('AUPRC Distribution', fontsize=22)
+            ax2.tick_params(axis='x', rotation=45)
+            ax2.set_ylim(0, 1.05)
+            ax2.grid(axis='y', alpha=0.3)
+
+            for i, data in enumerate(auprc_data):
+                mean_val = np.mean(data)
+                ax2.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                        label='Mean' if i == 0 else '')
+
+            ax2.legend(loc='lower right', fontsize=16)
+
+        # 3. F1 Score Box Plot
+        ax3 = axes[2]
+        f1_data = []
+        labels = []
+        for method in methods:
+            method_data = scenario_data[scenario_data['method'] == method]['f1_score']
+            method_data = method_data[method_data > 0]
+            if len(method_data) > 0:
+                f1_data.append(method_data.values)
+                labels.append(method)
+
+        if f1_data:
+            bp3 = ax3.boxplot(f1_data, labels=labels, patch_artist=True,
+                              boxprops=dict(facecolor='lightcoral', alpha=0.7),
+                              medianprops=dict(linewidth=0),
+                              whiskerprops=dict(linewidth=1.5),
+                              capprops=dict(linewidth=1.5))
+
+            ax3.set_ylabel('F1 Score', fontsize=20)
+            ax3.set_xlabel('Methods', fontsize=20)
+            ax3.set_title('F1 Score Distribution', fontsize=22)
+            ax3.tick_params(axis='x', rotation=45)
+            ax3.set_ylim(0, 0.6)
+            ax3.grid(axis='y', alpha=0.3)
+
+            for i, data in enumerate(f1_data):
+                mean_val = np.mean(data)
+                ax3.plot(i+1, mean_val, marker='D', color='green', markersize=8,
+                        label='Mean' if i == 0 else '')
+
+            ax3.legend(loc='lower right', fontsize=16)
+
+        plt.tight_layout()
+
+        # Save the figure
+        boxplot_path = os.path.join(results_dir, f'performance_boxplots_{scenario}.png')
+        plt.savefig(boxplot_path, dpi=300, bbox_inches='tight')
+        print(f"Performance box plots for {scenario} saved as '{boxplot_path}'")
+
+        plt.show()
 
 def generate_summary_report(performance_df, identification_counts, scenario_analysis):
     """
@@ -1225,14 +1771,16 @@ def main(working_dir=None):
         os.makedirs(results_dir)
         print(f"Created results directory: {results_dir}")
     else:
-        print(f"Using existing results directory: {results_dir}")
+        print(f"Using existing results directory: {results_dir}") 
         
     # Define file paths
     files = {
         "maesterpp": "maesterpp_mutation_combine.csv",
         "mquad": "mquad_mutation_combine.csv",
         "civet_LRT": "civet_mutation_combine_LRT_pvals_threshold_0.05_with_metadata_with_informative.csv",
-        "civet_Wald": "civet_mutation_combine_Wald_pvals_threshold_0.05_with_metadata_with_informative.csv"
+        "civet_Wald": "civet_mutation_combine_Wald_pvals_threshold_0.05_with_metadata_with_informative.csv",
+        "MitoTracer": "MitoTracer_mutation_combine.csv",
+        "scMitoMut": "scMitoMut_mutation_combine.csv"
     }
     
     try:
@@ -1270,14 +1818,24 @@ def main(working_dir=None):
         # Calculate performance metrics
         print("\nCalculating performance metrics...")
         performance_df = calculate_performance_metrics(combined_df, methods)
-        
+
+        # Calculate performance per condition
+        print("\nCalculating performance per condition...")
+        performance_per_condition_df = calculate_performance_per_condition(combined_df, methods)
+        print(f"Calculated performance for {len(performance_per_condition_df)} scenario-condition-method combinations")
+
+        # Save performance per condition to CSV
+        perf_per_condition_path = os.path.join(results_dir, 'performance_per_condition.csv')
+        performance_per_condition_df.to_csv(perf_per_condition_path, index=False)
+        print(f"Performance per condition saved to '{perf_per_condition_path}'")
+
         # Analyze identification patterns
         print("Analyzing identification patterns...")
         identification_counts, scenario_analysis = analyze_identification_patterns(combined_df, methods)
         
         # Create visualizations
         print("Creating visualizations...")
-        create_visualizations(combined_df, methods, performance_df, identification_counts, scenario_analysis)
+        create_visualizations(combined_df, methods, performance_df, identification_counts, scenario_analysis, performance_per_condition_df)
         
         # Create and save confusion matrices
         print("Creating confusion matrices...")
@@ -1286,11 +1844,19 @@ def main(working_dir=None):
         # Create scenario comparisons
         print("Creating scenario comparisons...")
         create_scenario_comparisons(combined_df, methods, performance_df)
-        
-        # Create mutation proportion plots
-        print("Creating mutation proportion plots...")
-        create_mutation_proportion_plots(combined_df, methods)
-        
+
+        # Create box plot visualizations for AUROC and F1
+        print("\nCreating box plot visualizations for AUROC and F1...")
+        create_boxplot_visualizations(performance_per_condition_df, methods)
+
+        # Create AUROC scenarios figure (single figure with all scenarios)
+        print("\nCreating AUROC scenarios figure...")
+        create_auroc_scenarios_figure(performance_per_condition_df, methods)
+
+        # Create box plots per scenario
+        print("\nCreating box plots per scenario...")
+        create_boxplot_per_scenario(performance_per_condition_df, methods)
+
         # Generate summary report
         generate_summary_report(performance_df, identification_counts, scenario_analysis)
         

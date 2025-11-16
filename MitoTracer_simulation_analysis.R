@@ -7,16 +7,30 @@ library(MitoTracer)
 library(data.table)
 library(Matrix)
 
-# Function to convert cellSNP data to MitoTracer format
-convert_cellsnp_to_mitotracer <- function(cellsnp_dir, output_dir) {
-  cat("Converting cellSNP data to MitoTracer format...\n")
+# ============================================
+# CONFIGURATION: Set subsample size here
+# ============================================
+# Set to NULL to use all cells, or specify a number (e.g., 200)
+N_CELLS_SUBSAMPLE <- 200
 
-  # Create output directory
-  dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+# Function to convert cellSNP data to MitoTracer format
+convert_cellsnp_to_mitotracer <- function(cellsnp_dir, n_cells_subsample = N_CELLS_SUBSAMPLE) {
+  cat("Converting cellSNP data to MitoTracer format...\n")
 
   # Load cell barcodes
   barcodes_file <- file.path(cellsnp_dir, "cellSNP.tag.barcodes.txt")
   cell_barcodes <- readLines(barcodes_file)
+
+  # Subsample cells if requested
+  n_total_cells <- length(cell_barcodes)
+  if (!is.null(n_cells_subsample) && n_cells_subsample < n_total_cells) {
+    cat("Subsampling", n_cells_subsample, "cells from", n_total_cells, "total cells...\n")
+    set.seed(42)  # For reproducibility
+    selected_cell_indices <- sort(sample(1:n_total_cells, n_cells_subsample))
+  } else {
+    cat("Using all", n_total_cells, "cells...\n")
+    selected_cell_indices <- 1:n_total_cells
+  }
 
   # Load mutation names from VCF
   vcf_file <- file.path(cellsnp_dir, "cellSNP.tag.vcf")
@@ -31,60 +45,50 @@ convert_cellsnp_to_mitotracer <- function(cellsnp_dir, output_dir) {
   dp_file <- file.path(cellsnp_dir, "cellSNP.tag.DP.mtx")
   dp_matrix <- readMM(dp_file)
 
-  # Convert sparse matrices to dense for easier manipulation
-  ad_dense <- as.matrix(ad_matrix)
-  dp_dense <- as.matrix(dp_matrix)
+  # Subset matrices to selected cells
+  ad_matrix <- ad_matrix[, selected_cell_indices]
+  dp_matrix <- dp_matrix[, selected_cell_indices]
+  cell_barcodes <- cell_barcodes[selected_cell_indices]
 
-  cat("Processing", nrow(ad_dense), "variants and", ncol(ad_dense), "cells...\n")
+  cat("Processing", nrow(ad_matrix), "variants and", ncol(ad_matrix), "cells...\n")
 
-  # Create MitoTracer-style files for each sample (cell)
-  # MitoTracer expects files with columns: ID, pos, s_reads, avg_BQ, t_reads, AF
-  for (j in 1:ncol(ad_dense)) {
-    sample_data <- data.frame()
+  # Pre-extract numeric positions from VCF IDs
+  variant_positions <- as.integer(sub(".*m(\\d+)$", "\\1", vcf_data$ID))
 
-    for (i in 1:nrow(ad_dense)) {
-      coverage <- dp_dense[i, j]
-      alt_depth <- ad_dense[i, j]
+  # Convert sparse matrices to triplet format for efficient iteration
+  # This avoids iterating over zero entries
+  ad_triplet <- summary(ad_matrix)
+  dp_triplet <- summary(dp_matrix)
 
-      # Skip if coverage is 0
-      if (coverage == 0) next
+  # Merge AD and DP data by matching row (variant) and column (cell) indices
+  # This only processes non-zero coverage entries
+  cat("Merging AD and DP data...\n")
+  merged_data <- merge(
+    ad_triplet,
+    dp_triplet,
+    by = c("i", "j"),
+    suffixes = c("_ad", "_dp")
+  )
 
-      # Use the ID from VCF file directly
-      mt_id <- vcf_data$ID[i]
+  # Filter out zero coverage entries
+  merged_data <- merged_data[merged_data$x_dp > 0, ]
 
-      # Extract numeric part from ID (e.g., baseline_m5192 -> 5192)
-      numeric_part <- sub(".*m(\\d+)$", "\\1", mt_id)
-      variant_pos <- as.integer(numeric_part)
+  cat("Creating data frame from", nrow(merged_data), "non-zero entries...\n")
 
-      # Calculate allele frequency
-      af <- alt_depth / coverage
+  # Create data frame directly - much faster than loop
+  mt_data <- data.frame(
+    ID = vcf_data$ID[merged_data$i],
+    pos = variant_positions[merged_data$i],
+    s_reads = merged_data$x_ad,
+    avg_BQ = 33,
+    t_reads = merged_data$x_dp,
+    AF = merged_data$x_ad / merged_data$x_dp,
+    sample = cell_barcodes[merged_data$j],
+    stringsAsFactors = FALSE
+  )
 
-      # Assume average base quality of 33 (typical for good quality data)
-      avg_bq <- 33
-
-      sample_data <- rbind(sample_data, data.frame(
-        ID = mt_id,
-        pos = variant_pos,
-        s_reads = alt_depth,
-        avg_BQ = avg_bq,
-        t_reads = coverage,
-        AF = af,
-        stringsAsFactors = FALSE
-      ))
-    }
-
-    # Write sample file
-    sample_name <- cell_barcodes[j]
-    sample_file <- file.path(output_dir, paste0(sample_name, ".txt"))
-    write.table(sample_data, sample_file, sep = "\t", row.names = FALSE, quote = FALSE)
-
-    if (j %% 100 == 0) {
-      cat("Processed", j, "cells...\n")
-    }
-  }
-
-  cat("Conversion complete. Wrote", ncol(ad_dense), "sample files.\n")
-  return(output_dir)
+  cat("Conversion complete. Created data frame with", nrow(mt_data), "records.\n")
+  return(mt_data)
 }
 
 # Function to process simulation data with MitoTracer
@@ -110,15 +114,13 @@ process_simulation_with_mitotracer <- function(sim_dir) {
   # Set up paths
   cellsnp_dir <- file.path(sim_dir, "cellSNP")
   output_dir <- file.path(sim_dir, "MitoTracer_selection_summary")
+
+  # Create output directory
   dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-  # Convert cellSNP to MitoTracer format
-  mt_input_dir <- file.path(output_dir, "mitotracer_input")
-  convert_cellsnp_to_mitotracer(cellsnp_dir, mt_input_dir)
-
-  # Load data using MitoTracer
-  cat("\nLoading data with MitoTracer...\n")
-  mt_data <- read.MT.variant.files.bulkATACseq(mt_input_dir)
+  # Convert cellSNP to MitoTracer format and create mt_data directly
+  cat("\nCreating MitoTracer data structure...\n")
+  mt_data <- convert_cellsnp_to_mitotracer(cellsnp_dir)
 
   # Remove sequencing errors and extract VAF matrix
   cat("\nDetecting errors and extracting variants...\n")
@@ -145,62 +147,39 @@ process_simulation_with_mitotracer <- function(sim_dir) {
     mt_matrix_subset <- mt_matrix
   }
 
-  mt_distance <- MT.feature.distance(mt_matrix_subset, iteration = 2000)
+  mt_distance <- MT.feature.distance(mt_matrix_subset, iteration = 1000)
 
   # Select informative variants
   cat("\nSelecting informative variants...\n")
-  # dis_cutoff = 0, sample_type = 2 (paired samples), size = 5 (top 5 features)
-  mt_informative <- MT.feature.selection(
+  # dis_cutoff = 0.05, sample_type = 2 (paired samples)
+  # MT.feature.selection returns a vector of informative variant names
+  informative_variant_names <- MT.feature.selection(
     mt_distance,
     mt_matrix,
-    dis_cutoff = 0,
-    sample_type = 2,
-    size = 5
+    dis_cutoff = 0.05,
+    sample_type = 2
   )
 
-  # Get informative variant names
-  informative_variant_names <- rownames(mt_informative)
   cat("\nInformative variants identified:", length(informative_variant_names), "\n")
 
   # Load all mutations for categorization
   mutations_file <- file.path(cellsnp_dir, "cellSNP.tag.mutations.txt")
   all_mutations <- readLines(mutations_file)
 
-  # Load VCF to create mapping from position to mutation name
-  vcf_file <- file.path(cellsnp_dir, "cellSNP.tag.vcf")
-  vcf_data <- read.table(vcf_file, comment.char = "#", stringsAsFactors = FALSE)
-  colnames(vcf_data) <- c("CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO")
-
-  # Create mapping from MT_ID format to original mutation name
-  # Extract position from MT_ID (e.g., MT_5192_N-A -> 5192)
-  pos_to_mutation <- setNames(vcf_data$ID,
-                               sapply(vcf_data$ID, function(id) {
-                                 paste0("MT_", sub(".*m(\\d+)$", "\\1", id), "_",
-                                        vcf_data$REF[vcf_data$ID == id], "-",
-                                        vcf_data$ALT[vcf_data$ID == id])
-                               }))
-
-  # Map informative variants back to original mutation names
-  informative_mapped <- character(0)
-  for (var_name in informative_variant_names) {
-    # Extract position from MT_pos_ref-alt format
-    pos_match <- regmatches(var_name, regexpr("MT_\\d+", var_name))
-    if (length(pos_match) > 0) {
-      # Find matching mutation in original list
-      for (mut in all_mutations) {
-        numeric_part <- sub(".*m(\\d+)$", "\\1", mut)
-        if (grepl(numeric_part, pos_match)) {
-          informative_mapped <- c(informative_mapped, mut)
-          break
-        }
-      }
-    }
-  }
+  # Since we now use VCF IDs directly, informative_variant_names should match all_mutations
+  # No mapping needed - the IDs are already in the correct format
+  informative_mapped <- informative_variant_names
 
   # Categorize mutations
   baseline_mutations <- grep("baseline", all_mutations, value = TRUE, ignore.case = TRUE)
   false_mutations <- grep("false", all_mutations, value = TRUE, ignore.case = TRUE)
   rest_mutations <- setdiff(all_mutations, c(baseline_mutations, false_mutations))
+
+  # Map distance values to all mutations
+  # mt_distance is a named vector, we need to match it to all_mutations
+  # Vectorized approach - much faster than loop
+  distance_values <- mt_distance[all_mutations]
+  # mt_distance[all_mutations] returns NA for non-matching names automatically
 
   # Create mutation data frame
   mutation_data <- data.frame(
@@ -208,6 +187,7 @@ process_simulation_with_mitotracer <- function(sim_dir) {
     condition = condition,
     mutation_name = all_mutations,
     detected = all_mutations %in% informative_mapped,
+    distance = distance_values,
     baseline_mutation = all_mutations %in% baseline_mutations,
     false_mutation = all_mutations %in% false_mutations,
     rest_mutation = all_mutations %in% rest_mutations,
@@ -225,6 +205,14 @@ process_simulation_with_mitotracer <- function(sim_dir) {
 
   # Save mutation matrix
   write.csv(mt_matrix, file.path(output_dir, "mutation_matrix.csv"))
+
+  # Save distance data
+  distance_df <- data.frame(
+    mutation = names(mt_distance),
+    distance = as.vector(mt_distance),
+    stringsAsFactors = FALSE
+  )
+  write.csv(distance_df, file.path(output_dir, "distance_data.csv"), row.names = FALSE)
 
   # Print summary
   cat("\n===========================================\n")
@@ -325,10 +313,20 @@ main <- function() {
   all_mutation_data <- list()
 
   for (sim_dir in sim_folders) {
+    # Check if output directory already exists, skip if it does
+    output_dir <- file.path(sim_dir, "MitoTracer_selection_summary")
+    if (dir.exists(output_dir)) {
+      cat("\nSkipping", sim_dir, "- MitoTracer_selection_summary already exists\n")
+      next
+    }
+
     tryCatch({
       result <- process_simulation_with_mitotracer(sim_dir)
-      all_results[[sim_dir]] <- result
-      all_mutation_data[[length(all_mutation_data) + 1]] <- result$mutation_data
+      # Only add to results if not skipped (NULL return)
+      if (!is.null(result)) {
+        all_results[[sim_dir]] <- result
+        all_mutation_data[[length(all_mutation_data) + 1]] <- result$mutation_data
+      }
     }, error = function(e) {
       cat("Error processing", sim_dir, ":", conditionMessage(e), "\n")
     })
@@ -351,3 +349,8 @@ main <- function() {
 if (!interactive()) {
   main()
 }
+
+#sim_dir <- "/Users/linxy29/Documents/Data/CIVET/simulation/SCENARIO_1_Mutation_Rate/mutation_rate_1_20250507_120608"
+#result <- process_simulation_with_mitotracer(sim_dir)
+
+main()

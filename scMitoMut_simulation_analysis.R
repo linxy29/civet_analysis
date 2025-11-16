@@ -400,6 +400,15 @@ main <- function() {
   all_mutation_data <- list()
 
   for (sim_dir in sim_folders) {
+    # Check if mutation_data.csv already exists, skip if it does
+    output_dir <- file.path(sim_dir, "scMitoMut_selection_summary")
+    mutation_data_file <- file.path(output_dir, "mutation_data.csv")
+
+    if (file.exists(mutation_data_file)) {
+      cat("\nSkipping", sim_dir, "- mutation_data.csv already exists\n")
+      next
+    }
+
     tryCatch({
       result <- process_simulation_with_scmitomut(sim_dir)
       all_results[[sim_dir]] <- result
@@ -426,3 +435,5 @@ main <- function() {
 if (!interactive()) {
   main()
 }
+
+main()

@@ -361,21 +361,28 @@ def create_variant_visualization(result, sim_dir, vaf_matrix, informative_varian
             f.write("  - VAF > 50% in at least 10 cells\n\n")
             f.write("Note: This configuration can be modified using command-line arguments.\n")
 
-def find_simulation_folders(base_dir="."):
+def find_simulation_folders(base_dir=".", allowed_scenarios=None):
     """
     Find all simulation folders under directories starting with SCENARIO*
-    
+
     Args:
         base_dir: Base directory to search from
-        
+        allowed_scenarios: List of scenario names to process (e.g., ["SCENARIO_4_CellCycle", "SCENARIO_5_Metabolic"])
+                          If None, process all scenarios
+
     Returns:
         List of paths to simulation folders
     """
     simulation_folders = []
-    
+
     # Find all directories starting with SCENARIO
     scenario_dirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d)) and d.startswith("SCENARIO")]
-    
+
+    # Filter by allowed scenarios if specified
+    if allowed_scenarios:
+        scenario_dirs = [d for d in scenario_dirs if d in allowed_scenarios]
+        print(f"Filtering to scenarios: {', '.join(scenario_dirs)}")
+
     for scenario_dir in scenario_dirs:
         scenario_path = os.path.join(base_dir, scenario_dir)
         # Find all subdirectories in the scenario directory
@@ -385,7 +392,7 @@ def find_simulation_folders(base_dir="."):
                 # Check if this is a simulation directory (has cellSNP folder)
                 if os.path.exists(os.path.join(subdir_path, "cellSNP")):
                     simulation_folders.append(subdir_path)
-    
+
     return simulation_folders
 
 def main():
@@ -422,9 +429,12 @@ def main():
     
     # Base directory where SCENARIO* folders are located
     base_dir = args.base_dir
-    
+
+    # Process all scenarios
+    allowed_scenarios = None  # None means process all scenarios
+
     # Find all simulation folders
-    sim_folders = find_simulation_folders(base_dir)
+    sim_folders = find_simulation_folders(base_dir, allowed_scenarios=allowed_scenarios)
     
     if not sim_folders:
         print("No simulation folders found under SCENARIO* directories.")

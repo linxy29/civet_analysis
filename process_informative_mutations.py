@@ -85,9 +85,11 @@ def process_all_metadata_files():
 
 def update_metadata_files(scenario_non_informative):
     """Update all *_with_metadata files with informative column"""
-    mutation_files = glob.glob("*_with_metadata.csv")
+    all_mutation_files = glob.glob("*_with_metadata.csv")
+    # Filter out files that already have '_with_informative' to avoid reprocessing
+    mutation_files = [f for f in all_mutation_files if '_with_informative' not in f]
     results = []
-    
+
     for file_path in mutation_files:
         print(f"Processing {file_path}")
         df = pd.read_csv(file_path)

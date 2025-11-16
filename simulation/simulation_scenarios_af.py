@@ -135,12 +135,12 @@ def scenario_3_differentiation(config, fractions=[0.2, 0.4, 0.8]):
 
 
 #############################################
-# 4) SCENARIO 4: Cell Cycle Stage Effects
+# 6) SCENARIO 6: Cell Cycle Stage Effects
 #############################################
 
-def scenario_4_cell_cycle(config, proliferation_rates=[0.3, 0.5, 0.7, 0.9]):
+def scenario_6_cell_cycle(config, proliferation_rates=[0.3, 0.5, 0.7, 0.9]):
     """
-    Scenario 4: Explore effects of cell cycle stage on mtDNA mutations.
+    Scenario 6: Explore effects of cell cycle stage on mtDNA mutations.
 
     Models how proliferation rate affects mutation accumulation:
     - Low proliferation (30%): More quiescent G0 cells with damage accumulation
@@ -153,7 +153,7 @@ def scenario_4_cell_cycle(config, proliferation_rates=[0.3, 0.5, 0.7, 0.9]):
     proliferation_rates : list
         Different proliferation rates to test (fraction of cycling cells).
     """
-    scenario_name = "SCENARIO_4_CellCycle"
+    scenario_name = "SCENARIO_6_CellCycle"
     print(f"=== Running {scenario_name} ===")
 
     for rate in proliferation_rates:
@@ -228,7 +228,45 @@ def scenario_5_metabolic_state(config, metabolic_modes=['cell_type_dependent', '
 
 
 #############################################
-# 6) Main Entry Point
+# 4) SCENARIO 4: Varying Sequencing Depth
+#############################################
+
+def scenario_4_varying_depth(config, depth_levels=[50, 100, 200, 500, 1000]):
+    """
+    Scenario 4: Explore effects of varying sequencing depth on mutation detection.
+
+    Tests how read depth affects mutation calling accuracy and heteroplasmy detection:
+    - Low depth (50): Reduced sensitivity, higher false negative rate
+    - Medium depth (100-200): Standard sequencing protocols
+    - High depth (500-1000): Better detection of low-AF mutations
+
+    Parameters
+    ----------
+    config : dict
+        Base configuration dictionary.
+    depth_levels : list
+        Different mean sequencing depth values to test.
+    """
+    scenario_name = "SCENARIO_4_VaryingDepth"
+    print(f"=== Running {scenario_name} ===")
+
+    for depth in depth_levels:
+        # Copy the configuration
+        sim_config = config.copy()
+
+        # Modify the mean depth parameter
+        sim_config["MEAN_DP"] = depth
+
+        # Create an output subdirectory for each depth level
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_subdir = f"/Users/linxy29/Documents/Data/CIVET/simulation/{scenario_name}/depth_{depth}_{timestamp}"
+
+        # Run and save
+        run_sim_and_save(sim_config, scenario_name, output_subdir)
+
+
+#############################################
+# 7) Main Entry Point
 #############################################
 
 if __name__ == "__main__":
@@ -236,9 +274,9 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None,
                         help="Path to configuration file (YAML or JSON).")
     parser.add_argument("--scenario", type=str, default="all",
-                        help="Which scenario to run: [1, 2, 3, 4, 5, all]. "
+                        help="Which scenario to run: [1, 2, 3, 4, 5, 6, all]. "
                              "1=Mutation Rate, 2=Segregation, 3=Differentiation, "
-                             "4=Cell Cycle, 5=Metabolic State")
+                             "4=Varying Depth, 5=Metabolic State, 6=Cell Cycle")
     args = parser.parse_args()
     
     # 1) Load base configuration
@@ -258,7 +296,10 @@ if __name__ == "__main__":
         scenario_3_differentiation(base_config)
 
     if scenario_choice in ["4", "all"]:
-        scenario_4_cell_cycle(base_config)
+        scenario_6_cell_cycle(base_config)
 
     if scenario_choice in ["5", "all"]:
         scenario_5_metabolic_state(base_config)
+
+    if scenario_choice in ["6", "all"]:
+        scenario_4_varying_depth(base_config)

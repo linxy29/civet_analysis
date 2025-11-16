@@ -62,39 +62,46 @@ def process_civet_results(root_dir):
         # Process each value type with thresholds
         for value_type in remaining_value_types:
             value_type_df = filtered_df[filtered_df['value'] == value_type]
-            
+
+            # Create a dictionary mapping mutation to its value (p-value or other metric)
+            mutation_values = dict(zip(value_type_df['variant'], value_type_df['generation']))
+
             # Process for each threshold
             for threshold in thresholds:
                 # Create output filename to check if it exists
                 output_file = os.path.join(root_dir, f"civet_mutation_combine_{value_type}_threshold_{threshold}.csv")
-                
+
                 # Skip if output file already exists
                 if os.path.exists(output_file):
                     print(f"Output file {output_file} already exists, skipping...")
                     continue
-                
+
                 key = f"{value_type}_{threshold}"
-                
+
                 # Initialize results for this value type and threshold if not already done
                 if key not in results_by_type_threshold:
                     results_by_type_threshold[key] = []
-                
+
                 # Identify detected mutations based on threshold
                 detected_mutations = value_type_df[value_type_df['generation'] < threshold]['variant'].unique()
-                
+
                 # Process each mutation
                 for mutation in all_mutations:
                     detected = mutation in detected_mutations
                     is_baseline = mutation in baseline_mutations
                     is_false = mutation in false_mutations
                     is_rest = mutation in rest_mutations if rest_mutations else not (is_baseline or is_false)
-                    
+
+                    # Get the p-value for this mutation (if available)
+                    pval = mutation_values.get(mutation, None)
+
                     # Add to results
                     results_by_type_threshold[key].append({
                         'Scenario': condition_name,
                         'condition': scenario_name,
                         'mutation_name': mutation,
                         'detected': detected,
+                        'pval': pval,
                         'baseline_mutation': is_baseline,
                         'false_mutation': is_false,
                         'rest_mutation': is_rest

@@ -7,7 +7,7 @@ import re
 
 def process_bic_params(root_dir):
     """
-    Process BIC_params.csv files and generate maesterPP_mutation_combine.csv
+    Process BIC_params.csv files and generate mquad_mutation_combine.csv
     
     Args:
         root_dir: Root directory containing scenario folders
@@ -30,13 +30,16 @@ def process_bic_params(root_dir):
             print(f"Error reading {bic_params_file}: {e}")
             continue
         
+        # Create a mapping from variant_name to deltaBIC
+        variant_to_deltaBIC = dict(zip(bic_df['variant_name'], bic_df['deltaBIC']))
+
         # Filter rows where both PASS_KP and PASS_MINCELLS are True
         passed_df = bic_df[(bic_df['PASS_KP'] == True) & (bic_df['PASS_MINCELLS'] == True)]
-        
+
         if passed_df.empty:
             print(f"No rows with PASS_KP=True and PASS_MINCELLS=True in {bic_params_file}")
             continue
-        
+
         # Extract variant_name values and remove SNP prefix
         detected_variants = passed_df['variant_name'].tolist()
         detected_indices = [int(re.sub(r'SNP', '', var)) for var in detected_variants]
@@ -64,27 +67,33 @@ def process_bic_params(root_dir):
         if os.path.exists(mutation_info_file):
             try:
                 mutation_info_df = pd.read_csv(mutation_info_file)
-                baseline_mutations = mutation_info_df[mutation_info_df['mutation_type'] == 'baseline']['mutation_name'].tolist()
-                false_mutations = mutation_info_df[mutation_info_df['mutation_type'] == 'false']['mutation_name'].tolist()
+                baseline_mutations = mutation_info_df[mutation_info_df['mutation_type'] == 'Baseline']['mutation_id'].tolist()
+                false_mutations = mutation_info_df[mutation_info_df['mutation_type'] == 'False']['mutation_id'].tolist()
                 # Rest mutations are those that are neither baseline nor false
-                rest_mutations = [m for m in mutation_info_df['mutation_name'].tolist() 
+                rest_mutations = [m for m in mutation_info_df['mutation_id'].tolist()
                                  if m not in baseline_mutations and m not in false_mutations]
             except Exception as e:
                 print(f"Error reading mutation info file {mutation_info_file}: {e}")
         
         # Process both detected and non-detected mutations
         for i, mutation in enumerate(mutations):
-            detected = f"SNP{i+1}" in detected_variants
+            variant_name = f"SNP{i+1}"
+            detected = variant_name in detected_variants
             is_baseline = mutation in baseline_mutations
             is_false = mutation in false_mutations
             is_rest = mutation in rest_mutations if rest_mutations else not (is_baseline or is_false)
-            
+
+            # Get deltaBIC value and negate it for pval (so lower pval = more significant)
+            deltaBIC = variant_to_deltaBIC.get(variant_name, None)
+            pval = -deltaBIC if deltaBIC is not None else None
+
             # Add to results
             results.append({
                 'Scenario': os.path.basename(os.path.dirname(scenario_path)),
                 'condition': scenario_name,
                 'mutation_name': mutation,
                 'detected': detected,
+                'pval': pval,
                 'baseline_mutation': is_baseline,
                 'false_mutation': is_false,
                 'rest_mutation': is_rest

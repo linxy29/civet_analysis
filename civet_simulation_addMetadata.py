@@ -64,13 +64,15 @@ def add_metadata_to_civet_files(simulation_folder):
     
     print(f"Loaded metadata for {len(metadata_df)} mutations across {len(metadata_df.groupby(['scenario', 'condition']))} scenario-condition combinations")
     
-    # Find all civet_mutation_combine_* files
-    civet_files = glob.glob(os.path.join(simulation_folder, "civet_mutation_combine_*.csv"))
-    
+    # Find all civet_mutation_combine_* files (excluding already processed ones)
+    all_civet_files = glob.glob(os.path.join(simulation_folder, "civet_mutation_combine_*.csv"))
+    # Filter out files that already have '_with_metadata' in the name to avoid reprocessing
+    civet_files = [f for f in all_civet_files if '_with_metadata' not in f]
+
     if not civet_files:
         print("No civet_mutation_combine_* files found!")
         return
-    
+
     print(f"Found {len(civet_files)} CIVET files to process")
     
     for civet_file in civet_files:
